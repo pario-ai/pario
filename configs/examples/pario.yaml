@@ -1,0 +1,18 @@
+listen: ":8080"
+db_path: "pario.db"
+
+providers:
+  - name: openai
+    url: https://api.openai.com
+    api_key: ${OPENAI_API_KEY}
+
+cache:
+  enabled: true
+  ttl: 1h
+
+budget:
+  enabled: true
+  policies:
+    - api_key: "*"
+      max_tokens: 1000000
+      period: daily
