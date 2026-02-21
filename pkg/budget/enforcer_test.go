@@ -34,7 +34,7 @@ func TestCheckUnderBudget(t *testing.T) {
 		{APIKey: "*", MaxTokens: 1000, Period: models.BudgetDaily},
 	}, tr)
 
-	if err := e.Check(ctx, "key1"); err != nil {
+	if err := e.Check(ctx, "key1", ""); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 }
@@ -52,7 +52,7 @@ func TestCheckExceeded(t *testing.T) {
 		{APIKey: "*", MaxTokens: 1000, Period: models.BudgetDaily},
 	}, tr)
 
-	err := e.Check(ctx, "key1")
+	err := e.Check(ctx, "key1", "")
 	if err == nil {
 		t.Fatal("expected budget exceeded error")
 	}
@@ -113,5 +113,70 @@ func TestSpecificKeyPolicy(t *testing.T) {
 	}
 	if len(statuses) != 2 {
 		t.Fatalf("expected 2 statuses for key1, got %d", len(statuses))
+	}
+}
+
+func TestPerModelBudget(t *testing.T) {
+	tr, ctx := setup(t)
+
+	// Record usage for two models under the same key.
+	_ = tr.Record(ctx, models.UsageRecord{
+		APIKey: "key1", Model: "gpt-4",
+		PromptTokens: 400, CompletionTokens: 200, TotalTokens: 600,
+		CreatedAt: time.Now().UTC(),
+	})
+	_ = tr.Record(ctx, models.UsageRecord{
+		APIKey: "key1", Model: "claude-haiku",
+		PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150,
+		CreatedAt: time.Now().UTC(),
+	})
+
+	e := New([]models.BudgetPolicy{
+		{APIKey: "*", Model: "gpt-4", MaxTokens: 500, Period: models.BudgetDaily},
+		{APIKey: "*", MaxTokens: 10000, Period: models.BudgetDaily},
+	}, tr)
+
+	// gpt-4 should be over its model-specific budget (600 >= 500).
+	err := e.Check(ctx, "key1", "gpt-4")
+	if err != ErrBudgetExceeded {
+		t.Errorf("expected ErrBudgetExceeded for gpt-4, got %v", err)
+	}
+
+	// claude-haiku should pass — no model-specific policy, global is under limit.
+	if err := e.Check(ctx, "key1", "claude-haiku"); err != nil {
+		t.Errorf("expected no error for claude-haiku, got %v", err)
+	}
+
+	// Status should show both policies (model-specific + global).
+	statuses, err := e.Status(ctx, "key1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("expected 2 statuses, got %d", len(statuses))
+	}
+}
+
+func TestPerModelPolicyNotAppliedToOtherModels(t *testing.T) {
+	tr, ctx := setup(t)
+
+	_ = tr.Record(ctx, models.UsageRecord{
+		APIKey: "key1", Model: "gpt-4",
+		PromptTokens: 500, CompletionTokens: 600, TotalTokens: 1100,
+		CreatedAt: time.Now().UTC(),
+	})
+
+	e := New([]models.BudgetPolicy{
+		{APIKey: "*", Model: "gpt-4", MaxTokens: 1000, Period: models.BudgetDaily},
+	}, tr)
+
+	// gpt-4 exceeds the policy.
+	if err := e.Check(ctx, "key1", "gpt-4"); err != ErrBudgetExceeded {
+		t.Errorf("expected ErrBudgetExceeded for gpt-4, got %v", err)
+	}
+
+	// claude-haiku has no matching policy, should pass.
+	if err := e.Check(ctx, "key1", "claude-haiku"); err != nil {
+		t.Errorf("expected no error for claude-haiku, got %v", err)
 	}
 }

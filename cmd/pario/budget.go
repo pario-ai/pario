@@ -58,10 +58,14 @@ func newBudgetCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "API KEY\tPERIOD\tMAX TOKENS\tUSED\tREMAINING")
+			fmt.Fprintln(w, "API KEY\tMODEL\tPERIOD\tMAX TOKENS\tUSED\tREMAINING")
 			for _, s := range statuses {
-				fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\n",
-					s.Policy.APIKey, s.Policy.Period, s.Policy.MaxTokens, s.Used, s.Remaining)
+				model := s.Policy.Model
+				if model == "" {
+					model = "(all)"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\n",
+					s.Policy.APIKey, model, s.Policy.Period, s.Policy.MaxTokens, s.Used, s.Remaining)
 			}
 			return w.Flush()
 		},

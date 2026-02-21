@@ -71,6 +71,44 @@ func TestTotalByKey(t *testing.T) {
 	}
 }
 
+func TestTotalByKeyAndModel(t *testing.T) {
+	tr := newTestTracker(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	_ = tr.Record(ctx, models.UsageRecord{
+		APIKey: "key1", Model: "gpt-4",
+		PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150,
+		CreatedAt: now,
+	})
+	_ = tr.Record(ctx, models.UsageRecord{
+		APIKey: "key1", Model: "claude-haiku",
+		PromptTokens: 200, CompletionTokens: 100, TotalTokens: 300,
+		CreatedAt: now,
+	})
+	_ = tr.Record(ctx, models.UsageRecord{
+		APIKey: "key1", Model: "gpt-4",
+		PromptTokens: 50, CompletionTokens: 25, TotalTokens: 75,
+		CreatedAt: now,
+	})
+
+	total, err := tr.TotalByKeyAndModel(ctx, "key1", "gpt-4", now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 225 {
+		t.Errorf("expected 225 for gpt-4, got %d", total)
+	}
+
+	total, err = tr.TotalByKeyAndModel(ctx, "key1", "claude-haiku", now.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 300 {
+		t.Errorf("expected 300 for claude-haiku, got %d", total)
+	}
+}
+
 func TestSummary(t *testing.T) {
 	tr := newTestTracker(t)
 	ctx := context.Background()

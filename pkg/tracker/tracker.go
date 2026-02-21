@@ -21,6 +21,8 @@ type Tracker interface {
 	QueryByKey(ctx context.Context, apiKey string, since time.Time) ([]models.UsageRecord, error)
 	// TotalByKey returns total tokens used by an API key since a given time.
 	TotalByKey(ctx context.Context, apiKey string, since time.Time) (int64, error)
+	// TotalByKeyAndModel returns total tokens used by an API key and model since a given time.
+	TotalByKeyAndModel(ctx context.Context, apiKey, model string, since time.Time) (int64, error)
 	// Summary returns aggregated usage summaries, optionally filtered by API key.
 	Summary(ctx context.Context, apiKey string) ([]models.UsageSummary, error)
 	// ResolveSession returns a session ID for the given API key, using the explicit
@@ -278,6 +280,19 @@ func (t *SQLiteTracker) TotalByKey(ctx context.Context, apiKey string, since tim
 	).Scan(&total)
 	if err != nil {
 		return 0, fmt.Errorf("total usage: %w", err)
+	}
+	return total, nil
+}
+
+// TotalByKeyAndModel returns total tokens used by an API key and model since a given time.
+func (t *SQLiteTracker) TotalByKeyAndModel(ctx context.Context, apiKey, model string, since time.Time) (int64, error) {
+	var total int64
+	err := t.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(total_tokens), 0) FROM usage_records WHERE api_key = ? AND model = ? AND created_at >= ?`,
+		apiKey, model, since,
+	).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("total usage by model: %w", err)
 	}
 	return total, nil
 }

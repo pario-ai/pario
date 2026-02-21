@@ -25,10 +25,16 @@ func New(policies []models.BudgetPolicy, t tracker.Tracker) *Enforcer {
 }
 
 // Check returns ErrBudgetExceeded if the API key has exceeded any applicable policy.
-func (e *Enforcer) Check(ctx context.Context, apiKey string) error {
-	for _, p := range e.applicablePolicies(apiKey) {
+func (e *Enforcer) Check(ctx context.Context, apiKey, model string) error {
+	for _, p := range e.applicablePolicies(apiKey, model) {
 		since := periodStart(p.Period)
-		used, err := e.tracker.TotalByKey(ctx, apiKey, since)
+		var used int64
+		var err error
+		if p.Model != "" {
+			used, err = e.tracker.TotalByKeyAndModel(ctx, apiKey, p.Model, since)
+		} else {
+			used, err = e.tracker.TotalByKey(ctx, apiKey, since)
+		}
 		if err != nil {
 			return fmt.Errorf("budget check: %w", err)
 		}
@@ -41,12 +47,18 @@ func (e *Enforcer) Check(ctx context.Context, apiKey string) error {
 
 // Status returns the budget status for an API key across all applicable policies.
 func (e *Enforcer) Status(ctx context.Context, apiKey string) ([]models.BudgetStatus, error) {
-	policies := e.applicablePolicies(apiKey)
+	policies := e.policiesForKey(apiKey)
 	statuses := make([]models.BudgetStatus, 0, len(policies))
 
 	for _, p := range policies {
 		since := periodStart(p.Period)
-		used, err := e.tracker.TotalByKey(ctx, apiKey, since)
+		var used int64
+		var err error
+		if p.Model != "" {
+			used, err = e.tracker.TotalByKeyAndModel(ctx, apiKey, p.Model, since)
+		} else {
+			used, err = e.tracker.TotalByKey(ctx, apiKey, since)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("budget status: %w", err)
 		}
@@ -63,11 +75,24 @@ func (e *Enforcer) Status(ctx context.Context, apiKey string) ([]models.BudgetSt
 	return statuses, nil
 }
 
-func (e *Enforcer) applicablePolicies(apiKey string) []models.BudgetPolicy {
+// policiesForKey returns all policies matching an API key (ignoring model filter).
+func (e *Enforcer) policiesForKey(apiKey string) []models.BudgetPolicy {
 	var result []models.BudgetPolicy
 	for _, p := range e.policies {
 		if p.APIKey == "*" || p.APIKey == apiKey {
 			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func (e *Enforcer) applicablePolicies(apiKey, model string) []models.BudgetPolicy {
+	var result []models.BudgetPolicy
+	for _, p := range e.policies {
+		if p.APIKey == "*" || p.APIKey == apiKey {
+			if p.Model == "" || p.Model == model {
+				result = append(result, p)
+			}
 		}
 	}
 	return result

@@ -25,6 +25,9 @@ func (f *fakeTracker) QueryByKey(_ context.Context, _ string, _ time.Time) ([]mo
 func (f *fakeTracker) TotalByKey(_ context.Context, _ string, _ time.Time) (int64, error) {
 	return 0, nil
 }
+func (f *fakeTracker) TotalByKeyAndModel(_ context.Context, _, _ string, _ time.Time) (int64, error) {
+	return 0, nil
+}
 func (f *fakeTracker) Summary(_ context.Context, _ string) ([]models.UsageSummary, error) {
 	return f.summaries, nil
 }

@@ -25,9 +25,11 @@ HTTP 429
 
 ### Policy Matching
 
-Policies are matched by `api_key`:
-- `"*"` — applies to all clients
-- `"sk-abc123"` — applies only to that specific key
+Policies are matched by `api_key` and optionally by `model`:
+- `api_key: "*"` — applies to all clients
+- `api_key: "sk-abc123"` — applies only to that specific key
+- `model: "gpt-4"` — applies only to requests for that model
+- `model` omitted or empty — applies to all models (sums all token usage)
 
 Multiple policies can match a single key. All must pass for the request to proceed.
 
@@ -44,8 +46,9 @@ pario budget status -c pario.yaml --api-key sk-abc123
 ### Output
 
 ```
-API KEY   PERIOD   MAX TOKENS   USED    REMAINING
-*         daily      1000000   423891      576109
+API KEY   MODEL    PERIOD   MAX TOKENS   USED    REMAINING
+*         (all)    daily      1000000   423891      576109
+*         gpt-4    daily       100000    58320       41680
 ```
 
 ## Configuration
@@ -56,6 +59,11 @@ budget:
   policies:
     - api_key: "*"
       max_tokens: 1000000
+      period: daily
+
+    - api_key: "*"
+      model: gpt-4
+      max_tokens: 100000
       period: daily
 
     - api_key: "sk-premium-client"

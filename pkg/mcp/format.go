@@ -74,20 +74,24 @@ func formatBudgetStatus(statuses []models.BudgetStatus) string {
 		return "No budget policies found."
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b,"%-20s %-8s %12s %12s %12s %6s\n",
-		"API Key", "Period", "Max Tokens", "Used", "Remaining", "Usage%")
-	b.WriteString(strings.Repeat("-", 74) + "\n")
+	fmt.Fprintf(&b, "%-20s %-20s %-8s %12s %12s %12s %6s\n",
+		"API Key", "Model", "Period", "Max Tokens", "Used", "Remaining", "Usage%")
+	b.WriteString(strings.Repeat("-", 94) + "\n")
 	for _, s := range statuses {
 		key := s.Policy.APIKey
 		if len(key) > 20 {
 			key = key[:8] + "..." + key[len(key)-8:]
 		}
+		model := s.Policy.Model
+		if model == "" {
+			model = "(all)"
+		}
 		pct := float64(0)
 		if s.Policy.MaxTokens > 0 {
 			pct = float64(s.Used) / float64(s.Policy.MaxTokens) * 100
 		}
-		fmt.Fprintf(&b,"%-20s %-8s %12d %12d %12d %5.1f%%\n",
-			key, s.Policy.Period, s.Policy.MaxTokens, s.Used, s.Remaining, pct)
+		fmt.Fprintf(&b, "%-20s %-20s %-8s %12d %12d %12d %5.1f%%\n",
+			key, model, s.Policy.Period, s.Policy.MaxTokens, s.Used, s.Remaining, pct)
 	}
 	return b.String()
 }

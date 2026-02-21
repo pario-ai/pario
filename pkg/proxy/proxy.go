@@ -181,7 +181,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Budget check
 	if s.enforcer != nil {
-		if err := s.enforcer.Check(r.Context(), clientKey); err != nil {
+		if err := s.enforcer.Check(r.Context(), clientKey, req.Model); err != nil {
 			if errors.Is(err, budget.ErrBudgetExceeded) {
 				writeJSONError(w, http.StatusTooManyRequests, "token budget exceeded")
 				return
@@ -310,7 +310,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Budget check
 	if s.enforcer != nil {
-		if err := s.enforcer.Check(r.Context(), clientKey); err != nil {
+		if err := s.enforcer.Check(r.Context(), clientKey, req.Model); err != nil {
 			if errors.Is(err, budget.ErrBudgetExceeded) {
 				writeJSONError(w, http.StatusTooManyRequests, "token budget exceeded")
 				return

@@ -11,6 +11,7 @@ const (
 // BudgetPolicy defines max tokens per API key per period.
 type BudgetPolicy struct {
 	APIKey    string       `json:"api_key" yaml:"api_key"`
+	Model     string       `json:"model,omitempty" yaml:"model,omitempty"`
 	MaxTokens int64        `json:"max_tokens" yaml:"max_tokens"`
 	Period    BudgetPeriod `json:"period" yaml:"period"`
 }
