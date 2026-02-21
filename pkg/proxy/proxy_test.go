@@ -186,6 +186,167 @@ func TestExplicitSessionHeader(t *testing.T) {
 	}
 }
 
+func newAnthropicUpstream() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := models.AnthropicResponse{
+			ID:    "msg_123",
+			Type:  "message",
+			Role:  "assistant",
+			Model: "claude-sonnet-4-20250514",
+			Content: []models.AnthropicContent{
+				{Type: "text", Text: "Hello!"},
+			},
+			StopReason: "end_turn",
+			Usage:      &models.AnthropicUsage{InputTokens: 12, OutputTokens: 8},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+func setupAnthropicProxy(t *testing.T, upstream *httptest.Server) *Server {
+	t.Helper()
+	dir := t.TempDir()
+
+	tr, err := tracker.New(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tr.Close() })
+
+	c, err := cachepkg.New(filepath.Join(dir, "cache.db"), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	cfg := &config.Config{
+		Listen: ":0",
+		Providers: []config.ProviderConfig{
+			{Name: "anthropic", URL: upstream.URL, APIKey: "sk-ant-provider", Type: "anthropic"},
+		},
+		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
+	}
+
+	return New(cfg, tr, c, nil)
+}
+
+func TestAnthropicMessages(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify x-api-key is used for upstream
+		if r.Header.Get("x-api-key") != "sk-ant-provider" {
+			t.Error("expected provider x-api-key in upstream request")
+		}
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("expected /v1/messages path, got %s", r.URL.Path)
+		}
+		resp := models.AnthropicResponse{
+			ID:    "msg_123",
+			Type:  "message",
+			Role:  "assistant",
+			Model: "claude-sonnet-4-20250514",
+			Content: []models.AnthropicContent{
+				{Type: "text", Text: "Hello!"},
+			},
+			StopReason: "end_turn",
+			Usage:      &models.AnthropicUsage{InputTokens: 12, OutputTokens: 8},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer upstream.Close()
+
+	srv := setupAnthropicProxy(t, upstream)
+
+	body := `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("x-api-key", "client-key")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("X-Pario-Cache") != "miss" {
+		t.Error("expected cache miss on first request")
+	}
+	if w.Header().Get("X-Pario-Session") == "" {
+		t.Error("expected X-Pario-Session header")
+	}
+
+	// Second request should be cached
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req2.Header.Set("x-api-key", "client-key")
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, req2)
+
+	if w2.Header().Get("X-Pario-Cache") != "hit" {
+		t.Error("expected cache hit on second request")
+	}
+}
+
+func TestAnthropicXAPIKeyAuth(t *testing.T) {
+	upstream := newAnthropicUpstream()
+	defer upstream.Close()
+
+	srv := setupAnthropicProxy(t, upstream)
+
+	// Request with x-api-key should work
+	body := `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("x-api-key", "client-key")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Request with no auth should fail
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w2.Code)
+	}
+}
+
+func TestAnthropicSessionTracking(t *testing.T) {
+	upstream := newAnthropicUpstream()
+	defer upstream.Close()
+
+	srv := setupAnthropicProxy(t, upstream)
+
+	body := `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hi"}],"max_tokens":1024}`
+
+	// Auto session
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("x-api-key", "client-key")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	sessionID := w.Header().Get("X-Pario-Session")
+	if sessionID == "" {
+		t.Fatal("expected auto-assigned session ID")
+	}
+	if !strings.HasPrefix(sessionID, "sess_") {
+		t.Errorf("expected session ID to start with sess_, got %s", sessionID)
+	}
+
+	// Explicit session (different body to avoid cache hit)
+	body2 := `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hello"}],"max_tokens":1024}`
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body2))
+	req2.Header.Set("x-api-key", "client-key")
+	req2.Header.Set("X-Pario-Session", "my-session")
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, req2)
+
+	if got := w2.Header().Get("X-Pario-Session"); got != "my-session" {
+		t.Errorf("expected X-Pario-Session=my-session, got %s", got)
+	}
+}
+
 func TestAutoSessionAssigned(t *testing.T) {
 	upstream := newUpstream()
 	defer upstream.Close()

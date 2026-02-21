@@ -3,8 +3,14 @@ db_path: "pario.db"
 
 providers:
   - name: openai
+    type: openai
     url: https://api.openai.com
     api_key: ${OPENAI_API_KEY}
+
+  - name: anthropic
+    type: anthropic
+    url: https://api.anthropic.com
+    api_key: ${ANTHROPIC_API_KEY}
 
 cache:
   enabled: true

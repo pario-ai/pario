@@ -25,10 +25,13 @@ type SessionConfig struct {
 }
 
 // ProviderConfig defines an upstream LLM provider.
+// ProviderConfig defines an upstream LLM provider.
+// Type is "openai" (default) or "anthropic".
 type ProviderConfig struct {
 	Name   string `yaml:"name"`
 	URL    string `yaml:"url"`
 	APIKey string `yaml:"api_key"`
+	Type   string `yaml:"type"`
 }
 
 // CacheConfig controls the prompt cache.
