@@ -276,7 +276,7 @@ func TestNotificationNoResponse(t *testing.T) {
 	line = append(line, '\n')
 
 	var out bytes.Buffer
-	srv.Run(context.Background(), bytes.NewReader(line), &out)
+	_ = srv.Run(context.Background(), bytes.NewReader(line), &out)
 
 	if out.Len() != 0 {
 		t.Errorf("expected no output for notification, got: %s", out.String())

@@ -28,7 +28,7 @@ func newCacheCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 
 			stats, err := c.Stats()
 			if err != nil {
@@ -52,7 +52,7 @@ func newCacheCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer c.Close()
+			defer func() { _ = c.Close() }()
 
 			if err := c.Clear(expiredOnly); err != nil {
 				return err

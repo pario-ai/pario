@@ -31,7 +31,7 @@ func newProxyCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("init tracker: %w", err)
 			}
-			defer tr.Close()
+			defer func() { _ = tr.Close() }()
 
 			var cache *cachepkg.Cache
 			if cfg.Cache.Enabled {
@@ -39,7 +39,7 @@ func newProxyCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("init cache: %w", err)
 				}
-				defer cache.Close()
+				defer func() { _ = cache.Close() }()
 			}
 
 			var enforcer *budget.Enforcer

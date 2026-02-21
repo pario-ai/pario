@@ -17,6 +17,24 @@ type Config struct {
 	Cache     CacheConfig      `yaml:"cache"`
 	Budget    BudgetConfig     `yaml:"budget"`
 	Session   SessionConfig    `yaml:"session"`
+	Router    RouterConfig     `yaml:"router"`
+}
+
+// RouterConfig defines model routing and fallback chains.
+type RouterConfig struct {
+	Routes []RouteConfig `yaml:"routes"`
+}
+
+// RouteConfig maps a client-facing model alias to an ordered list of targets.
+type RouteConfig struct {
+	Model   string        `yaml:"model"`
+	Targets []RouteTarget `yaml:"targets"`
+}
+
+// RouteTarget identifies a specific provider and model in a fallback chain.
+type RouteTarget struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
 }
 
 // SessionConfig controls session detection.

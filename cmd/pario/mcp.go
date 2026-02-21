@@ -34,7 +34,7 @@ func newMCPCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer tr.Close()
+			defer func() { _ = tr.Close() }()
 
 			var cache mcp.CacheStatter
 			if cfg.Cache.Enabled {
@@ -42,7 +42,7 @@ func newMCPCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				cache = c
 			}
 

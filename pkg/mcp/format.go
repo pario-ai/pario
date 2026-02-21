@@ -13,16 +13,16 @@ func formatSummary(rows []models.UsageSummary) string {
 		return "No usage data found."
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("%-20s %-25s %8s %10s %10s %10s\n",
-		"API Key", "Model", "Requests", "Prompt", "Completion", "Total"))
+	fmt.Fprintf(&b, "%-20s %-25s %8s %10s %10s %10s\n",
+		"API Key", "Model", "Requests", "Prompt", "Completion", "Total")
 	b.WriteString(strings.Repeat("-", 87) + "\n")
 	for _, r := range rows {
 		key := r.APIKey
 		if len(key) > 20 {
 			key = key[:8] + "..." + key[len(key)-8:]
 		}
-		b.WriteString(fmt.Sprintf("%-20s %-25s %8d %10d %10d %10d\n",
-			key, r.Model, r.RequestCount, r.TotalPrompt, r.TotalCompletion, r.TotalTokens))
+		fmt.Fprintf(&b, "%-20s %-25s %8d %10d %10d %10d\n",
+			key, r.Model, r.RequestCount, r.TotalPrompt, r.TotalCompletion, r.TotalTokens)
 	}
 	return b.String()
 }
@@ -33,19 +33,19 @@ func formatSessions(sessions []models.Session) string {
 		return "No sessions found."
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("%-38s %-20s %-20s %-20s %8s %10s\n",
-		"Session ID", "API Key", "Started", "Last Activity", "Requests", "Tokens"))
+	fmt.Fprintf(&b, "%-38s %-20s %-20s %-20s %8s %10s\n",
+		"Session ID", "API Key", "Started", "Last Activity", "Requests", "Tokens")
 	b.WriteString(strings.Repeat("-", 120) + "\n")
 	for _, s := range sessions {
 		key := s.APIKey
 		if len(key) > 20 {
 			key = key[:8] + "..." + key[len(key)-8:]
 		}
-		b.WriteString(fmt.Sprintf("%-38s %-20s %-20s %-20s %8d %10d\n",
+		fmt.Fprintf(&b,"%-38s %-20s %-20s %-20s %8d %10d\n",
 			s.ID, key,
 			s.StartedAt.Format("2006-01-02 15:04:05"),
 			s.LastActivity.Format("2006-01-02 15:04:05"),
-			s.RequestCount, s.TotalTokens))
+			s.RequestCount, s.TotalTokens)
 	}
 	return b.String()
 }
@@ -56,14 +56,14 @@ func formatSessionRequests(reqs []models.SessionRequest) string {
 		return "No requests found for this session."
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("%4s  %-20s %10s %10s %10s %10s\n",
-		"Seq", "Time", "Prompt", "Completion", "Total", "Ctx Growth"))
+	fmt.Fprintf(&b,"%4s  %-20s %10s %10s %10s %10s\n",
+		"Seq", "Time", "Prompt", "Completion", "Total", "Ctx Growth")
 	b.WriteString(strings.Repeat("-", 70) + "\n")
 	for _, r := range reqs {
-		b.WriteString(fmt.Sprintf("%4d  %-20s %10d %10d %10d %+10d\n",
+		fmt.Fprintf(&b,"%4d  %-20s %10d %10d %10d %+10d\n",
 			r.Seq,
 			r.CreatedAt.Format("2006-01-02 15:04:05"),
-			r.PromptTokens, r.CompletionTokens, r.TotalTokens, r.ContextGrowth))
+			r.PromptTokens, r.CompletionTokens, r.TotalTokens, r.ContextGrowth)
 	}
 	return b.String()
 }
@@ -74,8 +74,8 @@ func formatBudgetStatus(statuses []models.BudgetStatus) string {
 		return "No budget policies found."
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("%-20s %-8s %12s %12s %12s %6s\n",
-		"API Key", "Period", "Max Tokens", "Used", "Remaining", "Usage%"))
+	fmt.Fprintf(&b,"%-20s %-8s %12s %12s %12s %6s\n",
+		"API Key", "Period", "Max Tokens", "Used", "Remaining", "Usage%")
 	b.WriteString(strings.Repeat("-", 74) + "\n")
 	for _, s := range statuses {
 		key := s.Policy.APIKey
@@ -86,8 +86,8 @@ func formatBudgetStatus(statuses []models.BudgetStatus) string {
 		if s.Policy.MaxTokens > 0 {
 			pct = float64(s.Used) / float64(s.Policy.MaxTokens) * 100
 		}
-		b.WriteString(fmt.Sprintf("%-20s %-8s %12d %12d %12d %5.1f%%\n",
-			key, s.Policy.Period, s.Policy.MaxTokens, s.Used, s.Remaining, pct))
+		fmt.Fprintf(&b,"%-20s %-8s %12d %12d %12d %5.1f%%\n",
+			key, s.Policy.Period, s.Policy.MaxTokens, s.Used, s.Remaining, pct)
 	}
 	return b.String()
 }

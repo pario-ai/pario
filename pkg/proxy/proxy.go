@@ -18,6 +18,7 @@ import (
 	cachepkg "github.com/pario-ai/pario/pkg/cache/sqlite"
 	"github.com/pario-ai/pario/pkg/config"
 	"github.com/pario-ai/pario/pkg/models"
+	"github.com/pario-ai/pario/pkg/router"
 	"github.com/pario-ai/pario/pkg/tracker"
 )
 
@@ -27,6 +28,7 @@ type Server struct {
 	tracker  tracker.Tracker
 	cache    *cachepkg.Cache
 	enforcer *budget.Enforcer
+	router   *router.Router
 	mux      *http.ServeMux
 }
 
@@ -37,6 +39,7 @@ func New(cfg *config.Config, t tracker.Tracker, c *cachepkg.Cache, e *budget.Enf
 		tracker:  t,
 		cache:    c,
 		enforcer: e,
+		router:   router.New(cfg),
 		mux:      http.NewServeMux(),
 	}
 	s.mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
@@ -71,6 +74,73 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// upstreamResult holds the response from a single upstream attempt.
+type upstreamResult struct {
+	statusCode int
+	body       []byte
+	header     http.Header
+}
+
+// doUpstreamRequest sends a request to an upstream provider and returns the result.
+func doUpstreamRequest(ctx context.Context, providerURL, path, contentType string, headers map[string]string, body []byte) (*upstreamResult, error) {
+	target, err := url.Parse(providerURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid provider URL: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String()+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	return &upstreamResult{
+		statusCode: resp.StatusCode,
+		body:       respBody,
+		header:     resp.Header,
+	}, nil
+}
+
+// isRetryable returns true if the error or status code warrants trying the next route.
+func isRetryable(err error, statusCode int) bool {
+	if err != nil {
+		return true
+	}
+	return statusCode >= 500
+}
+
+// rewriteModel replaces the "model" field in a JSON body with the given model name.
+func rewriteModel(body []byte, model string) []byte {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body
+	}
+	modelJSON, err := json.Marshal(model)
+	if err != nil {
+		return body
+	}
+	raw["model"] = modelJSON
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -121,33 +191,37 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Forward to provider
-	provider := s.cfg.Providers[0]
-	providerURL, err := url.Parse(provider.URL)
+	// Resolve routes
+	routes, err := s.router.Resolve(req.Model)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "invalid provider URL")
+		writeJSONError(w, http.StatusBadGateway, "no providers available")
 		return
 	}
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
-		providerURL.String()+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "failed to create upstream request")
-		return
-	}
-	proxyReq.Header.Set("Content-Type", "application/json")
-	proxyReq.Header.Set("Authorization", "Bearer "+provider.APIKey)
+	// Fallback loop
+	var result *upstreamResult
+	for _, route := range routes {
+		reqBody := rewriteModel(body, route.Model)
+		headers := map[string]string{
+			"Authorization": "Bearer " + route.Provider.APIKey,
+		}
 
-	resp, err := http.DefaultClient.Do(proxyReq)
-	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "upstream request failed")
-		return
+		res, err := doUpstreamRequest(r.Context(), route.Provider.URL, "/v1/chat/completions", "application/json", headers, reqBody)
+		if isRetryable(err, 0) {
+			log.Printf("upstream %s failed: %v, trying next", route.Provider.Name, err)
+			continue
+		}
+		if res != nil && isRetryable(nil, res.statusCode) {
+			log.Printf("upstream %s returned %d, trying next", route.Provider.Name, res.statusCode)
+			result = res
+			continue
+		}
+		result = res
+		break
 	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "failed to read upstream response")
+	if result == nil {
+		writeJSONError(w, http.StatusBadGateway, "all upstream providers failed")
 		return
 	}
 
@@ -167,10 +241,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse response for usage tracking
-	if resp.StatusCode == http.StatusOK && !req.Stream {
+	if result.statusCode == http.StatusOK && !req.Stream {
 		var chatResp models.ChatCompletionResponse
-		if err := json.Unmarshal(respBody, &chatResp); err == nil && chatResp.Usage != nil {
-			// Record usage
+		if err := json.Unmarshal(result.body, &chatResp); err == nil && chatResp.Usage != nil {
 			_ = s.tracker.Record(r.Context(), models.UsageRecord{
 				APIKey:           clientKey,
 				Model:            chatResp.Model,
@@ -181,34 +254,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				CreatedAt:        time.Now().UTC(),
 			})
 
-			// Cache the response
 			if s.cache != nil {
 				hash := cachepkg.HashPrompt(req.Model, req.Messages)
-				_ = s.cache.Put(hash, req.Model, respBody)
+				_ = s.cache.Put(hash, req.Model, result.body)
 			}
 		}
 	}
 
 	// Forward response headers and body
-	for k, vals := range resp.Header {
+	for k, vals := range result.header {
 		for _, v := range vals {
 			w.Header().Add(k, v)
 		}
 	}
 	w.Header().Set("X-Pario-Cache", "miss")
-	w.WriteHeader(resp.StatusCode)
-	w.Write(respBody)
-}
-
-// findProvider returns the first provider matching the given type.
-// Falls back to the first provider if no match is found.
-func (s *Server) findProvider(typ string) config.ProviderConfig {
-	for _, p := range s.cfg.Providers {
-		if p.Type == typ {
-			return p
-		}
-	}
-	return s.cfg.Providers[0]
+	w.WriteHeader(result.statusCode)
+	w.Write(result.body)
 }
 
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -259,37 +320,41 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Forward to Anthropic provider
-	provider := s.findProvider("anthropic")
-	providerURL, err := url.Parse(provider.URL)
+	// Resolve routes
+	routes, err := s.router.Resolve(req.Model)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "invalid provider URL")
+		writeJSONError(w, http.StatusBadGateway, "no providers available")
 		return
 	}
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
-		providerURL.String()+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "failed to create upstream request")
-		return
-	}
-	proxyReq.Header.Set("Content-Type", "application/json")
-	proxyReq.Header.Set("x-api-key", provider.APIKey)
-	// Forward anthropic-version header if present
-	if v := r.Header.Get("anthropic-version"); v != "" {
-		proxyReq.Header.Set("anthropic-version", v)
+	// Fallback loop
+	anthropicVersion := r.Header.Get("anthropic-version")
+	var result *upstreamResult
+	for _, route := range routes {
+		reqBody := rewriteModel(body, route.Model)
+		headers := map[string]string{
+			"x-api-key": route.Provider.APIKey,
+		}
+		if anthropicVersion != "" {
+			headers["anthropic-version"] = anthropicVersion
+		}
+
+		res, err := doUpstreamRequest(r.Context(), route.Provider.URL, "/v1/messages", "application/json", headers, reqBody)
+		if isRetryable(err, 0) {
+			log.Printf("upstream %s failed: %v, trying next", route.Provider.Name, err)
+			continue
+		}
+		if res != nil && isRetryable(nil, res.statusCode) {
+			log.Printf("upstream %s returned %d, trying next", route.Provider.Name, res.statusCode)
+			result = res
+			continue
+		}
+		result = res
+		break
 	}
 
-	resp, err := http.DefaultClient.Do(proxyReq)
-	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "upstream request failed")
-		return
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "failed to read upstream response")
+	if result == nil {
+		writeJSONError(w, http.StatusBadGateway, "all upstream providers failed")
 		return
 	}
 
@@ -309,9 +374,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse response for usage tracking
-	if resp.StatusCode == http.StatusOK && !req.Stream {
+	if result.statusCode == http.StatusOK && !req.Stream {
 		var anthResp models.AnthropicResponse
-		if err := json.Unmarshal(respBody, &anthResp); err == nil && anthResp.Usage != nil {
+		if err := json.Unmarshal(result.body, &anthResp); err == nil && anthResp.Usage != nil {
 			usage := anthResp.Usage.ToUsage()
 			_ = s.tracker.Record(r.Context(), models.UsageRecord{
 				APIKey:           clientKey,
@@ -323,23 +388,22 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				CreatedAt:        time.Now().UTC(),
 			})
 
-			// Cache the response
 			if s.cache != nil {
 				hash := cachepkg.HashPrompt(req.Model, req.Messages)
-				_ = s.cache.Put(hash, req.Model, respBody)
+				_ = s.cache.Put(hash, req.Model, result.body)
 			}
 		}
 	}
 
 	// Forward response headers and body
-	for k, vals := range resp.Header {
+	for k, vals := range result.header {
 		for _, v := range vals {
 			w.Header().Add(k, v)
 		}
 	}
 	w.Header().Set("X-Pario-Cache", "miss")
-	w.WriteHeader(resp.StatusCode)
-	w.Write(respBody)
+	w.WriteHeader(result.statusCode)
+	w.Write(result.body)
 }
 
 func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {

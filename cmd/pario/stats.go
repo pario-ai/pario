@@ -32,7 +32,7 @@ func newStatsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer tr.Close()
+			defer func() { _ = tr.Close() }()
 
 			ctx := context.Background()
 

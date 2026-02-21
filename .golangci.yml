@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - staticcheck
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - io.Close
+        - (io.Closer).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.DB).Close
+        - (net/http.ResponseWriter).Write
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*strings.Builder).WriteString
+        - (*bytes.Buffer).WriteString
+        - encoding/json.Unmarshal
+        - (*encoding/json.Encoder).Encode
+        - (*encoding/json.Decoder).Decode
+        - crypto/rand.Read

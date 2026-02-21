@@ -16,7 +16,7 @@ func newTestTracker(t *testing.T) *SQLiteTracker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { tr.Close() })
+	t.Cleanup(func() { _ = tr.Close() })
 	return tr
 }
 
@@ -241,11 +241,11 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tr1.Close()
+	_ = tr1.Close()
 
 	tr2, err := New(dbPath)
 	if err != nil {
 		t.Fatal("second New() failed:", err)
 	}
-	tr2.Close()
+	_ = tr2.Close()
 }

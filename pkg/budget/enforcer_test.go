@@ -17,7 +17,7 @@ func setup(t *testing.T) (tracker.Tracker, context.Context) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { tr.Close() })
+	t.Cleanup(func() { _ = tr.Close() })
 	return tr, context.Background()
 }
 

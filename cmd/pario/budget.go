@@ -38,7 +38,7 @@ func newBudgetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer tr.Close()
+			defer func() { _ = tr.Close() }()
 
 			enforcer := budget.New(cfg.Budget.Policies, tr)
 

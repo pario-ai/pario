@@ -25,13 +25,13 @@ func setupProxy(t *testing.T, upstream *httptest.Server) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { tr.Close() })
+	t.Cleanup(func() { _ = tr.Close() })
 
 	c, err := cachepkg.New(filepath.Join(dir, "cache.db"), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 
 	cfg := &config.Config{
 		Listen: ":0",
@@ -131,7 +131,7 @@ func TestBudgetExceeded(t *testing.T) {
 
 	dir := t.TempDir()
 	tr, _ := tracker.New(filepath.Join(dir, "tracker.db"))
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 
 	// Record usage that exceeds the budget
 	ctx := context.Background()
@@ -211,13 +211,13 @@ func setupAnthropicProxy(t *testing.T, upstream *httptest.Server) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { tr.Close() })
+	t.Cleanup(func() { _ = tr.Close() })
 
 	c, err := cachepkg.New(filepath.Join(dir, "cache.db"), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 
 	cfg := &config.Config{
 		Listen: ":0",
@@ -370,5 +370,279 @@ func TestAutoSessionAssigned(t *testing.T) {
 	}
 	if !strings.HasPrefix(sessionID, "sess_") {
 		t.Errorf("expected session ID to start with sess_, got %s", sessionID)
+	}
+}
+
+func TestFallbackOn5xx(t *testing.T) {
+	callCount := 0
+	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"internal"}`))
+	}))
+	defer upstream1.Close()
+
+	upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		resp := models.ChatCompletionResponse{
+			ID:    "chatcmpl-fallback",
+			Model: "gpt-4o-mini",
+			Choices: []models.Choice{
+				{Index: 0, Message: models.ChatMessage{Role: "assistant", Content: "fallback!"}, FinishReason: "stop"},
+			},
+			Usage: &models.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer upstream2.Close()
+
+	dir := t.TempDir()
+	tr, _ := tracker.New(filepath.Join(dir, "tracker.db"))
+	defer func() { _ = tr.Close() }()
+
+	cfg := &config.Config{
+		Listen: ":0",
+		Providers: []config.ProviderConfig{
+			{Name: "primary", URL: upstream1.URL, APIKey: "sk-1"},
+			{Name: "fallback", URL: upstream2.URL, APIKey: "sk-2"},
+		},
+		Router: config.RouterConfig{
+			Routes: []config.RouteConfig{
+				{
+					Model: "gpt-4",
+					Targets: []config.RouteTarget{
+						{Provider: "primary", Model: "gpt-4"},
+						{Provider: "fallback", Model: "gpt-4o-mini"},
+					},
+				},
+			},
+		},
+		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
+	}
+
+	srv := New(cfg, tr, nil, nil)
+
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 upstream calls (1 fail + 1 success), got %d", callCount)
+	}
+}
+
+func TestNoFallbackOn4xx(t *testing.T) {
+	callCount := 0
+	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"bad request"}`))
+	}))
+	defer upstream1.Close()
+
+	upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream2.Close()
+
+	dir := t.TempDir()
+	tr, _ := tracker.New(filepath.Join(dir, "tracker.db"))
+	defer func() { _ = tr.Close() }()
+
+	cfg := &config.Config{
+		Listen: ":0",
+		Providers: []config.ProviderConfig{
+			{Name: "primary", URL: upstream1.URL, APIKey: "sk-1"},
+			{Name: "fallback", URL: upstream2.URL, APIKey: "sk-2"},
+		},
+		Router: config.RouterConfig{
+			Routes: []config.RouteConfig{
+				{
+					Model: "gpt-4",
+					Targets: []config.RouteTarget{
+						{Provider: "primary", Model: "gpt-4"},
+						{Provider: "fallback", Model: "gpt-4"},
+					},
+				},
+			},
+		},
+		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
+	}
+
+	srv := New(cfg, tr, nil, nil)
+
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 upstream call (no fallback on 4xx), got %d", callCount)
+	}
+}
+
+func TestAllProvidersFail502(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"fail"}`))
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	tr, _ := tracker.New(filepath.Join(dir, "tracker.db"))
+	defer func() { _ = tr.Close() }()
+
+	cfg := &config.Config{
+		Listen: ":0",
+		Providers: []config.ProviderConfig{
+			{Name: "p1", URL: upstream.URL, APIKey: "sk-1"},
+			{Name: "p2", URL: upstream.URL, APIKey: "sk-2"},
+		},
+		Router: config.RouterConfig{
+			Routes: []config.RouteConfig{
+				{
+					Model: "gpt-4",
+					Targets: []config.RouteTarget{
+						{Provider: "p1", Model: "gpt-4"},
+						{Provider: "p2", Model: "gpt-4"},
+					},
+				},
+			},
+		},
+		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
+	}
+
+	srv := New(cfg, tr, nil, nil)
+
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	// Last 5xx result should be returned (not 502 from pario) since we have a result
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 (last upstream response), got %d", w.Code)
+	}
+}
+
+func TestModelRewriteInBody(t *testing.T) {
+	var receivedModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		json.NewDecoder(r.Body).Decode(&body)
+		receivedModel = body["model"].(string)
+		resp := models.ChatCompletionResponse{
+			ID:    "chatcmpl-rw",
+			Model: receivedModel,
+			Choices: []models.Choice{
+				{Index: 0, Message: models.ChatMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
+			},
+			Usage: &models.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	tr, _ := tracker.New(filepath.Join(dir, "tracker.db"))
+	defer func() { _ = tr.Close() }()
+
+	cfg := &config.Config{
+		Listen: ":0",
+		Providers: []config.ProviderConfig{
+			{Name: "openai", URL: upstream.URL, APIKey: "sk-1"},
+		},
+		Router: config.RouterConfig{
+			Routes: []config.RouteConfig{
+				{
+					Model: "fast",
+					Targets: []config.RouteTarget{
+						{Provider: "openai", Model: "gpt-4o-mini"},
+					},
+				},
+			},
+		},
+		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
+	}
+
+	srv := New(cfg, tr, nil, nil)
+
+	body := `{"model":"fast","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if receivedModel != "gpt-4o-mini" {
+		t.Errorf("expected upstream to receive model gpt-4o-mini, got %s", receivedModel)
+	}
+}
+
+func TestTransportErrorFallback(t *testing.T) {
+	// upstream1 is a closed server (transport error)
+	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	upstream1.Close() // close immediately to cause transport error
+
+	upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := models.ChatCompletionResponse{
+			ID:    "chatcmpl-ok",
+			Model: "gpt-4",
+			Choices: []models.Choice{
+				{Index: 0, Message: models.ChatMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
+			},
+			Usage: &models.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer upstream2.Close()
+
+	dir := t.TempDir()
+	tr, _ := tracker.New(filepath.Join(dir, "tracker.db"))
+	defer func() { _ = tr.Close() }()
+
+	cfg := &config.Config{
+		Listen: ":0",
+		Providers: []config.ProviderConfig{
+			{Name: "dead", URL: upstream1.URL, APIKey: "sk-1"},
+			{Name: "alive", URL: upstream2.URL, APIKey: "sk-2"},
+		},
+		Router: config.RouterConfig{
+			Routes: []config.RouteConfig{
+				{
+					Model: "gpt-4",
+					Targets: []config.RouteTarget{
+						{Provider: "dead", Model: "gpt-4"},
+						{Provider: "alive", Model: "gpt-4"},
+					},
+				},
+			},
+		},
+		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
+	}
+
+	srv := New(cfg, tr, nil, nil)
+
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }

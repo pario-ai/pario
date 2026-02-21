@@ -68,6 +68,54 @@ budget:
 	}
 }
 
+func TestLoadWithRouter(t *testing.T) {
+	content := `
+listen: ":8080"
+providers:
+  - name: openai
+    url: https://api.openai.com
+    api_key: sk-1
+  - name: anthropic
+    url: https://api.anthropic.com
+    api_key: sk-2
+router:
+  routes:
+    - model: fast
+      targets:
+        - provider: openai
+          model: gpt-4o-mini
+        - provider: anthropic
+          model: claude-haiku-4-5
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cfg.Router.Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(cfg.Router.Routes))
+	}
+	route := cfg.Router.Routes[0]
+	if route.Model != "fast" {
+		t.Errorf("expected model 'fast', got %s", route.Model)
+	}
+	if len(route.Targets) != 2 {
+		t.Fatalf("expected 2 targets, got %d", len(route.Targets))
+	}
+	if route.Targets[0].Provider != "openai" || route.Targets[0].Model != "gpt-4o-mini" {
+		t.Errorf("unexpected first target: %+v", route.Targets[0])
+	}
+	if route.Targets[1].Provider != "anthropic" || route.Targets[1].Model != "claude-haiku-4-5" {
+		t.Errorf("unexpected second target: %+v", route.Targets[1])
+	}
+}
+
 func TestLoadMissing(t *testing.T) {
 	_, err := Load("/nonexistent/config.yaml")
 	if err == nil {
