@@ -150,6 +150,21 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve session
+	var sessionID string
+	if st, ok := s.tracker.(*tracker.SQLiteTracker); ok {
+		explicitSession := r.Header.Get("X-Pario-Session")
+		sid, err := st.ResolveSession(r.Context(), clientKey, explicitSession, s.cfg.Session.GapTimeout)
+		if err != nil {
+			log.Printf("session resolve error: %v", err)
+		} else {
+			sessionID = sid
+		}
+	}
+	if sessionID != "" {
+		w.Header().Set("X-Pario-Session", sessionID)
+	}
+
 	// Parse response for usage tracking
 	if resp.StatusCode == http.StatusOK && !req.Stream {
 		var chatResp models.ChatCompletionResponse
@@ -158,6 +173,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			_ = s.tracker.Record(r.Context(), models.UsageRecord{
 				APIKey:           clientKey,
 				Model:            chatResp.Model,
+				SessionID:        sessionID,
 				PromptTokens:     chatResp.Usage.PromptTokens,
 				CompletionTokens: chatResp.Usage.CompletionTokens,
 				TotalTokens:      chatResp.Usage.TotalTokens,

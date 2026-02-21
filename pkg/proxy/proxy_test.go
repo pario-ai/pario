@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -37,9 +38,24 @@ func setupProxy(t *testing.T, upstream *httptest.Server) *Server {
 		Providers: []config.ProviderConfig{
 			{Name: "test", URL: upstream.URL, APIKey: "sk-provider"},
 		},
+		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
 	}
 
 	return New(cfg, tr, c, nil)
+}
+
+func newUpstream() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := models.ChatCompletionResponse{
+			ID:    "chatcmpl-123",
+			Model: "gpt-4",
+			Choices: []models.Choice{
+				{Index: 0, Message: models.ChatMessage{Role: "assistant", Content: "Hello!"}, FinishReason: "stop"},
+			},
+			Usage: &models.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
 }
 
 func TestChatCompletions(t *testing.T) {
@@ -75,6 +91,11 @@ func TestChatCompletions(t *testing.T) {
 	}
 	if w.Header().Get("X-Pario-Cache") != "miss" {
 		t.Error("expected cache miss on first request")
+	}
+
+	// Should get a session ID back
+	if w.Header().Get("X-Pario-Session") == "" {
+		t.Error("expected X-Pario-Session header in response")
 	}
 
 	// Second request should be cached
@@ -113,7 +134,8 @@ func TestBudgetExceeded(t *testing.T) {
 	defer tr.Close()
 
 	// Record usage that exceeds the budget
-	_ = tr.Record(nil, models.UsageRecord{
+	ctx := context.Background()
+	_ = tr.Record(ctx, models.UsageRecord{
 		APIKey: "client-key", Model: "gpt-4",
 		PromptTokens: 500, CompletionTokens: 600, TotalTokens: 1100,
 		CreatedAt: time.Now().UTC(),
@@ -126,6 +148,7 @@ func TestBudgetExceeded(t *testing.T) {
 	cfg := &config.Config{
 		Listen:    ":0",
 		Providers: []config.ProviderConfig{{Name: "test", URL: upstream.URL, APIKey: "sk-provider"}},
+		Session:   config.SessionConfig{GapTimeout: 30 * time.Minute},
 	}
 
 	srv := New(cfg, tr, nil, enforcer)
@@ -138,5 +161,53 @@ func TestBudgetExceeded(t *testing.T) {
 
 	if w.Code != http.StatusTooManyRequests {
 		t.Errorf("expected 429, got %d", w.Code)
+	}
+}
+
+func TestExplicitSessionHeader(t *testing.T) {
+	upstream := newUpstream()
+	defer upstream.Close()
+
+	srv := setupProxy(t, upstream)
+
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+	req.Header.Set("X-Pario-Session", "my-custom-session")
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Header().Get("X-Pario-Session"); got != "my-custom-session" {
+		t.Errorf("expected X-Pario-Session=my-custom-session, got %s", got)
+	}
+}
+
+func TestAutoSessionAssigned(t *testing.T) {
+	upstream := newUpstream()
+	defer upstream.Close()
+
+	srv := setupProxy(t, upstream)
+
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	sessionID := w.Header().Get("X-Pario-Session")
+	if sessionID == "" {
+		t.Fatal("expected auto-assigned session ID")
+	}
+	if !strings.HasPrefix(sessionID, "sess_") {
+		t.Errorf("expected session ID to start with sess_, got %s", sessionID)
 	}
 }

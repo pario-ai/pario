@@ -16,6 +16,12 @@ type Config struct {
 	Providers []ProviderConfig `yaml:"providers"`
 	Cache     CacheConfig      `yaml:"cache"`
 	Budget    BudgetConfig     `yaml:"budget"`
+	Session   SessionConfig    `yaml:"session"`
+}
+
+// SessionConfig controls session detection.
+type SessionConfig struct {
+	GapTimeout time.Duration `yaml:"gap_timeout"`
 }
 
 // ProviderConfig defines an upstream LLM provider.
@@ -48,6 +54,9 @@ func Default() *Config {
 		},
 		Budget: BudgetConfig{
 			Enabled: false,
+		},
+		Session: SessionConfig{
+			GapTimeout: 30 * time.Minute,
 		},
 	}
 }

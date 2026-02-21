@@ -104,3 +104,148 @@ func TestSummary(t *testing.T) {
 		t.Fatalf("expected 1 summary, got %d", len(summaries))
 	}
 }
+
+func TestResolveSessionExplicit(t *testing.T) {
+	tr := newTestTracker(t)
+	ctx := context.Background()
+
+	sid, err := tr.ResolveSession(ctx, "key1", "my-session", 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid != "my-session" {
+		t.Errorf("expected my-session, got %s", sid)
+	}
+
+	// Calling again with the same ID should return the same session.
+	sid2, err := tr.ResolveSession(ctx, "key1", "my-session", 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid2 != "my-session" {
+		t.Errorf("expected my-session, got %s", sid2)
+	}
+}
+
+func TestResolveSessionAutoDetect(t *testing.T) {
+	tr := newTestTracker(t)
+	ctx := context.Background()
+
+	// First call creates a new session.
+	sid1, err := tr.ResolveSession(ctx, "key1", "", 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid1 == "" {
+		t.Fatal("expected non-empty session ID")
+	}
+
+	// Second call within gap should reuse.
+	sid2, err := tr.ResolveSession(ctx, "key1", "", 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid2 != sid1 {
+		t.Errorf("expected same session %s, got %s", sid1, sid2)
+	}
+
+	// With a zero gap timeout, should create new.
+	sid3, err := tr.ResolveSession(ctx, "key1", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sid3 == sid1 {
+		t.Error("expected new session with zero gap timeout")
+	}
+}
+
+func TestListSessions(t *testing.T) {
+	tr := newTestTracker(t)
+	ctx := context.Background()
+
+	_, _ = tr.ResolveSession(ctx, "key1", "sess-a", 30*time.Minute)
+	_, _ = tr.ResolveSession(ctx, "key2", "sess-b", 30*time.Minute)
+
+	all, err := tr.ListSessions(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(all))
+	}
+
+	filtered, err := tr.ListSessions(ctx, "key1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(filtered))
+	}
+}
+
+func TestSessionRequests(t *testing.T) {
+	tr := newTestTracker(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	sid, _ := tr.ResolveSession(ctx, "key1", "sess-detail", 30*time.Minute)
+
+	// Record 3 requests with increasing prompt tokens (simulating context growth).
+	for i, pt := range []int{500, 1200, 2800} {
+		_ = tr.Record(ctx, models.UsageRecord{
+			APIKey: "key1", Model: "gpt-4", SessionID: sid,
+			PromptTokens: pt, CompletionTokens: 100, TotalTokens: pt + 100,
+			CreatedAt: now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	reqs, err := tr.SessionRequests(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 3 {
+		t.Fatalf("expected 3 requests, got %d", len(reqs))
+	}
+
+	// First request has no context growth.
+	if reqs[0].ContextGrowth != 0 {
+		t.Errorf("expected 0 context growth for first request, got %d", reqs[0].ContextGrowth)
+	}
+	// Second: 1200 - 500 = 700
+	if reqs[1].ContextGrowth != 700 {
+		t.Errorf("expected 700 context growth, got %d", reqs[1].ContextGrowth)
+	}
+	// Third: 2800 - 1200 = 1600
+	if reqs[2].ContextGrowth != 1600 {
+		t.Errorf("expected 1600 context growth, got %d", reqs[2].ContextGrowth)
+	}
+
+	// Verify session counters were updated.
+	sessions, _ := tr.ListSessions(ctx, "key1")
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].RequestCount != 3 {
+		t.Errorf("expected 3 requests in session, got %d", sessions[0].RequestCount)
+	}
+	if sessions[0].TotalTokens != 600+1300+2900 {
+		t.Errorf("expected %d total tokens, got %d", 600+1300+2900, sessions[0].TotalTokens)
+	}
+}
+
+func TestMigrationIdempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	// Create tracker twice — second should not fail.
+	tr1, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr1.Close()
+
+	tr2, err := New(dbPath)
+	if err != nil {
+		t.Fatal("second New() failed:", err)
+	}
+	tr2.Close()
+}
