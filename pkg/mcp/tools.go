@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // Tool argument structs.
@@ -25,6 +26,7 @@ var toolHandlers = map[string]toolHandler{
 	"pario_session_detail": handleSessionDetail,
 	"pario_budget":         handleBudget,
 	"pario_cache_stats":    handleCacheStats,
+	"pario_cost_report":    handleCostReport,
 }
 
 // allTools is the list of tool definitions exposed via tools/list.
@@ -78,6 +80,27 @@ var allTools = []ToolDefinition{
 				"api_key": map[string]any{
 					"type":        "string",
 					"description": "Filter by API key (optional, omit for all keys)",
+				},
+			},
+		},
+	},
+	{
+		Name:        "pario_cost_report",
+		Description: "Show estimated costs grouped by team, project, and model with optional filtering.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"team": map[string]any{
+					"type":        "string",
+					"description": "Filter by team (optional)",
+				},
+				"project": map[string]any{
+					"type":        "string",
+					"description": "Filter by project (optional)",
+				},
+				"since": map[string]any{
+					"type":        "string",
+					"description": "Start date in YYYY-MM-DD format (optional, defaults to start of month)",
 				},
 			},
 		},
@@ -157,6 +180,51 @@ func handleBudget(ctx context.Context, s *Server, rawArgs json.RawMessage) ToolC
 		return errorResult("Error fetching budget status: " + err.Error())
 	}
 	return textResult(formatBudgetStatus(statuses))
+}
+
+type costReportArgs struct {
+	Team    string `json:"team"`
+	Project string `json:"project"`
+	Since   string `json:"since"`
+}
+
+func handleCostReport(ctx context.Context, s *Server, rawArgs json.RawMessage) ToolCallResult {
+	var args costReportArgs
+	if len(rawArgs) > 0 {
+		_ = json.Unmarshal(rawArgs, &args)
+	}
+
+	since := beginningOfMonth()
+	if args.Since != "" {
+		t, err := time.Parse("2006-01-02", args.Since)
+		if err != nil {
+			return errorResult("Invalid since date (use YYYY-MM-DD): " + err.Error())
+		}
+		since = t
+	}
+
+	reports, err := s.tracker.CostReport(ctx, since, args.Team, args.Project)
+	if err != nil {
+		return errorResult("Error fetching cost report: " + err.Error())
+	}
+
+	pricingMap := make(map[string]struct{ prompt, completion float64 }, len(s.pricing))
+	for _, p := range s.pricing {
+		pricingMap[p.Model] = struct{ prompt, completion float64 }{p.PromptCost, p.CompletionCost}
+	}
+	for i := range reports {
+		if p, ok := pricingMap[reports[i].Model]; ok {
+			reports[i].EstimatedCost = (float64(reports[i].PromptTokens)/1000)*p.prompt +
+				(float64(reports[i].CompletionTokens)/1000)*p.completion
+		}
+	}
+
+	return textResult(formatCostReport(reports))
+}
+
+func beginningOfMonth() time.Time {
+	now := time.Now().UTC()
+	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 }
 
 func handleCacheStats(_ context.Context, s *Server, _ json.RawMessage) ToolCallResult {

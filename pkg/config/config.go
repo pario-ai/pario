@@ -17,7 +17,15 @@ type Config struct {
 	Cache     CacheConfig      `yaml:"cache"`
 	Budget    BudgetConfig     `yaml:"budget"`
 	Session   SessionConfig    `yaml:"session"`
-	Router    RouterConfig     `yaml:"router"`
+	Router      RouterConfig      `yaml:"router"`
+	Attribution AttributionConfig `yaml:"attribution"`
+}
+
+// AttributionConfig controls cost attribution and pricing.
+type AttributionConfig struct {
+	Enabled   bool                        `yaml:"enabled"`
+	Pricing   []models.ModelPricing       `yaml:"pricing"`
+	KeyLabels map[string]models.CostLabel `yaml:"key_labels"`
 }
 
 // RouterConfig defines model routing and fallback chains.

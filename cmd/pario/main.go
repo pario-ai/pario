@@ -23,6 +23,7 @@ func main() {
 		newMCPCmd(),
 		newCacheCmd(),
 		newBudgetCmd(),
+		newCostCmd(),
 	)
 
 	if err := root.Execute(); err != nil {

@@ -96,6 +96,34 @@ func formatBudgetStatus(statuses []models.BudgetStatus) string {
 	return b.String()
 }
 
+// formatCostReport formats cost reports as a text table.
+func formatCostReport(reports []models.CostReport) string {
+	if len(reports) == 0 {
+		return "No cost data found."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-15s %-15s %-25s %8s %12s %10s\n",
+		"TEAM", "PROJECT", "MODEL", "REQUESTS", "TOKENS", "EST. COST")
+	b.WriteString(strings.Repeat("-", 89) + "\n")
+	var totalCost float64
+	for _, r := range reports {
+		team := r.Team
+		if team == "" {
+			team = "(none)"
+		}
+		project := r.Project
+		if project == "" {
+			project = "(none)"
+		}
+		fmt.Fprintf(&b, "%-15s %-15s %-25s %8d %12d $%9.4f\n",
+			team, project, r.Model, r.RequestCount, r.TotalTokens, r.EstimatedCost)
+		totalCost += r.EstimatedCost
+	}
+	b.WriteString(strings.Repeat("-", 89) + "\n")
+	fmt.Fprintf(&b, "%77s $%9.4f\n", "TOTAL:", totalCost)
+	return b.String()
+}
+
 // formatCacheStats formats cache stats as text.
 func formatCacheStats(stats models.CacheStats) string {
 	total := stats.Hits + stats.Misses

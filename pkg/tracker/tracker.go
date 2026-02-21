@@ -32,6 +32,8 @@ type Tracker interface {
 	ListSessions(ctx context.Context, apiKey string) ([]models.Session, error)
 	// SessionRequests returns per-request detail for a session with context growth.
 	SessionRequests(ctx context.Context, sessionID string) ([]models.SessionRequest, error)
+	// CostReport returns aggregated usage grouped by team, project, and model.
+	CostReport(ctx context.Context, since time.Time, team, project string) ([]models.CostReport, error)
 	// Close releases resources.
 	Close() error
 }
@@ -91,6 +93,16 @@ func New(dbPath string) (*SQLiteTracker, error) {
 		}
 	}
 
+	// Add attribution columns if missing.
+	for _, col := range []string{"team", "project", "env"} {
+		if !columnExists(db, "usage_records", col) {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE usage_records ADD COLUMN %s TEXT NOT NULL DEFAULT ''`, col)); err != nil {
+				db.Close()
+				return nil, fmt.Errorf("add %s column: %w", col, err)
+			}
+		}
+	}
+
 	return &SQLiteTracker{db: db}, nil
 }
 
@@ -126,9 +138,9 @@ func generateSessionID() string {
 // Record stores a usage record and updates session counters.
 func (t *SQLiteTracker) Record(ctx context.Context, rec models.UsageRecord) error {
 	_, err := t.db.ExecContext(ctx,
-		`INSERT INTO usage_records (api_key, model, session_id, prompt_tokens, completion_tokens, total_tokens, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		rec.APIKey, rec.Model, rec.SessionID, rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens, rec.CreatedAt,
+		`INSERT INTO usage_records (api_key, model, session_id, prompt_tokens, completion_tokens, total_tokens, team, project, env, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.APIKey, rec.Model, rec.SessionID, rec.PromptTokens, rec.CompletionTokens, rec.TotalTokens, rec.Team, rec.Project, rec.Env, rec.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("record usage: %w", err)
@@ -251,7 +263,7 @@ func (t *SQLiteTracker) SessionRequests(ctx context.Context, sessionID string) (
 // QueryByKey returns usage records for an API key since a given time.
 func (t *SQLiteTracker) QueryByKey(ctx context.Context, apiKey string, since time.Time) ([]models.UsageRecord, error) {
 	rows, err := t.db.QueryContext(ctx,
-		`SELECT id, api_key, model, session_id, prompt_tokens, completion_tokens, total_tokens, created_at
+		`SELECT id, api_key, model, session_id, prompt_tokens, completion_tokens, total_tokens, team, project, env, created_at
 		 FROM usage_records WHERE api_key = ? AND created_at >= ? ORDER BY created_at DESC`,
 		apiKey, since,
 	)
@@ -263,7 +275,7 @@ func (t *SQLiteTracker) QueryByKey(ctx context.Context, apiKey string, since tim
 	var records []models.UsageRecord
 	for rows.Next() {
 		var r models.UsageRecord
-		if err := rows.Scan(&r.ID, &r.APIKey, &r.Model, &r.SessionID, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.APIKey, &r.Model, &r.SessionID, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.Team, &r.Project, &r.Env, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan usage: %w", err)
 		}
 		records = append(records, r)
@@ -323,6 +335,38 @@ func (t *SQLiteTracker) Summary(ctx context.Context, apiKey string) ([]models.Us
 		summaries = append(summaries, s)
 	}
 	return summaries, rows.Err()
+}
+
+// CostReport returns aggregated usage grouped by team, project, and model.
+func (t *SQLiteTracker) CostReport(ctx context.Context, since time.Time, team, project string) ([]models.CostReport, error) {
+	query := `SELECT team, project, model, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens), SUM(total_tokens)
+		 FROM usage_records WHERE created_at >= ?`
+	args := []any{since}
+	if team != "" {
+		query += ` AND team = ?`
+		args = append(args, team)
+	}
+	if project != "" {
+		query += ` AND project = ?`
+		args = append(args, project)
+	}
+	query += ` GROUP BY team, project, model ORDER BY team, project, model`
+
+	rows, err := t.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("cost report: %w", err)
+	}
+	defer rows.Close()
+
+	var reports []models.CostReport
+	for rows.Next() {
+		var r models.CostReport
+		if err := rows.Scan(&r.Team, &r.Project, &r.Model, &r.RequestCount, &r.PromptTokens, &r.CompletionTokens, &r.TotalTokens); err != nil {
+			return nil, fmt.Errorf("scan cost report: %w", err)
+		}
+		reports = append(reports, r)
+	}
+	return reports, rows.Err()
 }
 
 // Close releases the database connection.

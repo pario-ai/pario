@@ -13,9 +13,10 @@ import (
 
 // fakeTracker implements tracker.Tracker for testing.
 type fakeTracker struct {
-	summaries []models.UsageSummary
-	sessions  []models.Session
-	requests  []models.SessionRequest
+	summaries   []models.UsageSummary
+	sessions    []models.Session
+	requests    []models.SessionRequest
+	costReports []models.CostReport
 }
 
 func (f *fakeTracker) Record(_ context.Context, _ models.UsageRecord) error              { return nil }
@@ -39,6 +40,9 @@ func (f *fakeTracker) ListSessions(_ context.Context, _ string) ([]models.Sessio
 }
 func (f *fakeTracker) SessionRequests(_ context.Context, _ string) ([]models.SessionRequest, error) {
 	return f.requests, nil
+}
+func (f *fakeTracker) CostReport(_ context.Context, _ time.Time, _, _ string) ([]models.CostReport, error) {
+	return f.costReports, nil
 }
 func (f *fakeTracker) Close() error { return nil }
 
@@ -70,7 +74,7 @@ func sendAndReceive(t *testing.T, srv *Server, req Request) Response {
 }
 
 func TestInitialize(t *testing.T) {
-	srv := New(&fakeTracker{}, nil, nil, "test")
+	srv := New(&fakeTracker{}, nil, nil, nil, "test")
 	resp := sendAndReceive(t, srv, Request{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage(`1`),
@@ -94,7 +98,7 @@ func TestInitialize(t *testing.T) {
 }
 
 func TestToolsList(t *testing.T) {
-	srv := New(&fakeTracker{}, nil, nil, "test")
+	srv := New(&fakeTracker{}, nil, nil, nil, "test")
 	resp := sendAndReceive(t, srv, Request{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage(`2`),
@@ -109,15 +113,15 @@ func TestToolsList(t *testing.T) {
 	var result ToolsListResult
 	json.Unmarshal(data, &result)
 
-	if len(result.Tools) != 5 {
-		t.Errorf("got %d tools, want 5", len(result.Tools))
+	if len(result.Tools) != 6 {
+		t.Errorf("got %d tools, want 6", len(result.Tools))
 	}
 
 	names := make(map[string]bool)
 	for _, tool := range result.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"pario_stats", "pario_sessions", "pario_session_detail", "pario_budget", "pario_cache_stats"} {
+	for _, want := range []string{"pario_stats", "pario_sessions", "pario_session_detail", "pario_budget", "pario_cache_stats", "pario_cost_report"} {
 		if !names[want] {
 			t.Errorf("missing tool: %s", want)
 		}
@@ -130,7 +134,7 @@ func TestToolCallStats(t *testing.T) {
 			{APIKey: "sk-test", Model: "gpt-4", RequestCount: 10, TotalPrompt: 500, TotalCompletion: 200, TotalTokens: 700},
 		},
 	}
-	srv := New(tr, nil, nil, "test")
+	srv := New(tr, nil, nil, nil, "test")
 
 	params, _ := json.Marshal(ToolCallParams{Name: "pario_stats", Arguments: json.RawMessage(`{}`)})
 	resp := sendAndReceive(t, srv, Request{
@@ -157,7 +161,7 @@ func TestToolCallStats(t *testing.T) {
 }
 
 func TestToolCallCacheNotConfigured(t *testing.T) {
-	srv := New(&fakeTracker{}, nil, nil, "test")
+	srv := New(&fakeTracker{}, nil, nil, nil, "test")
 
 	params, _ := json.Marshal(ToolCallParams{Name: "pario_cache_stats"})
 	resp := sendAndReceive(t, srv, Request{
@@ -177,7 +181,7 @@ func TestToolCallCacheNotConfigured(t *testing.T) {
 }
 
 func TestToolCallBudgetNotConfigured(t *testing.T) {
-	srv := New(&fakeTracker{}, nil, nil, "test")
+	srv := New(&fakeTracker{}, nil, nil, nil, "test")
 
 	params, _ := json.Marshal(ToolCallParams{Name: "pario_budget"})
 	resp := sendAndReceive(t, srv, Request{
@@ -198,7 +202,7 @@ func TestToolCallBudgetNotConfigured(t *testing.T) {
 
 func TestToolCallCacheStats(t *testing.T) {
 	cache := &fakeCache{stats: models.CacheStats{Entries: 42, Hits: 10, Misses: 5}}
-	srv := New(&fakeTracker{}, cache, nil, "test")
+	srv := New(&fakeTracker{}, cache, nil, nil, "test")
 
 	params, _ := json.Marshal(ToolCallParams{Name: "pario_cache_stats"})
 	resp := sendAndReceive(t, srv, Request{
@@ -224,7 +228,7 @@ func TestToolCallSessionDetail(t *testing.T) {
 			{Seq: 1, PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, ContextGrowth: 100},
 		},
 	}
-	srv := New(tr, nil, nil, "test")
+	srv := New(tr, nil, nil, nil, "test")
 
 	params, _ := json.Marshal(ToolCallParams{
 		Name:      "pario_session_detail",
@@ -247,7 +251,7 @@ func TestToolCallSessionDetail(t *testing.T) {
 }
 
 func TestToolCallSessionDetailMissingID(t *testing.T) {
-	srv := New(&fakeTracker{}, nil, nil, "test")
+	srv := New(&fakeTracker{}, nil, nil, nil, "test")
 
 	params, _ := json.Marshal(ToolCallParams{
 		Name:      "pario_session_detail",
@@ -270,7 +274,7 @@ func TestToolCallSessionDetailMissingID(t *testing.T) {
 }
 
 func TestNotificationNoResponse(t *testing.T) {
-	srv := New(&fakeTracker{}, nil, nil, "test")
+	srv := New(&fakeTracker{}, nil, nil, nil, "test")
 
 	line, _ := json.Marshal(Request{
 		JSONRPC: "2.0",
@@ -287,7 +291,7 @@ func TestNotificationNoResponse(t *testing.T) {
 }
 
 func TestUnknownMethod(t *testing.T) {
-	srv := New(&fakeTracker{}, nil, nil, "test")
+	srv := New(&fakeTracker{}, nil, nil, nil, "test")
 	resp := sendAndReceive(t, srv, Request{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage(`9`),

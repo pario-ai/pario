@@ -244,6 +244,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if result.statusCode == http.StatusOK && !req.Stream {
 		var chatResp models.ChatCompletionResponse
 		if err := json.Unmarshal(result.body, &chatResp); err == nil && chatResp.Usage != nil {
+			team, project, env := s.resolveLabels(r, clientKey)
 			_ = s.tracker.Record(r.Context(), models.UsageRecord{
 				APIKey:           clientKey,
 				Model:            chatResp.Model,
@@ -251,6 +252,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				PromptTokens:     chatResp.Usage.PromptTokens,
 				CompletionTokens: chatResp.Usage.CompletionTokens,
 				TotalTokens:      chatResp.Usage.TotalTokens,
+				Team:             team,
+				Project:          project,
+				Env:              env,
 				CreatedAt:        time.Now().UTC(),
 			})
 
@@ -378,6 +382,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		var anthResp models.AnthropicResponse
 		if err := json.Unmarshal(result.body, &anthResp); err == nil && anthResp.Usage != nil {
 			usage := anthResp.Usage.ToUsage()
+			team, project, env := s.resolveLabels(r, clientKey)
 			_ = s.tracker.Record(r.Context(), models.UsageRecord{
 				APIKey:           clientKey,
 				Model:            anthResp.Model,
@@ -385,6 +390,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				PromptTokens:     usage.PromptTokens,
 				CompletionTokens: usage.CompletionTokens,
 				TotalTokens:      usage.TotalTokens,
+				Team:             team,
+				Project:          project,
+				Env:              env,
 				CreatedAt:        time.Now().UTC(),
 			})
 
@@ -428,6 +436,22 @@ func (s *Server) handlePassthrough(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// resolveLabels extracts attribution labels from headers, falling back to config key_labels.
+func (s *Server) resolveLabels(r *http.Request, clientKey string) (team, project, env string) {
+	team = r.Header.Get("X-Pario-Team")
+	project = r.Header.Get("X-Pario-Project")
+	env = r.Header.Get("X-Pario-Env")
+
+	if team == "" && project == "" && env == "" {
+		if labels, ok := s.cfg.Attribution.KeyLabels[clientKey]; ok {
+			team = labels.Team
+			project = labels.Project
+			env = labels.Env
+		}
+	}
+	return team, project, env
 }
 
 func extractAPIKey(r *http.Request) string {

@@ -271,6 +271,81 @@ func TestSessionRequests(t *testing.T) {
 	}
 }
 
+func TestCostReport(t *testing.T) {
+	tr := newTestTracker(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	records := []models.UsageRecord{
+		{APIKey: "k1", Model: "gpt-4", Team: "backend", Project: "api", PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500, CreatedAt: now},
+		{APIKey: "k1", Model: "gpt-4", Team: "backend", Project: "api", PromptTokens: 2000, CompletionTokens: 1000, TotalTokens: 3000, CreatedAt: now},
+		{APIKey: "k2", Model: "claude-sonnet", Team: "frontend", Project: "web", PromptTokens: 500, CompletionTokens: 200, TotalTokens: 700, CreatedAt: now},
+		{APIKey: "k3", Model: "gpt-4", Team: "backend", Project: "worker", PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CreatedAt: now},
+	}
+	for _, r := range records {
+		if err := tr.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// All records
+	reports, err := tr.CostReport(ctx, now.Add(-time.Minute), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 3 {
+		t.Fatalf("expected 3 groups, got %d", len(reports))
+	}
+
+	// Filter by team
+	reports, err = tr.CostReport(ctx, now.Add(-time.Minute), "backend", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 2 {
+		t.Fatalf("expected 2 groups for backend, got %d", len(reports))
+	}
+
+	// Filter by team and project
+	reports, err = tr.CostReport(ctx, now.Add(-time.Minute), "backend", "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("expected 1 group for backend/api, got %d", len(reports))
+	}
+	if reports[0].RequestCount != 2 {
+		t.Errorf("expected 2 requests, got %d", reports[0].RequestCount)
+	}
+	if reports[0].PromptTokens != 3000 {
+		t.Errorf("expected 3000 prompt tokens, got %d", reports[0].PromptTokens)
+	}
+}
+
+func TestCostReportNoLabels(t *testing.T) {
+	tr := newTestTracker(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Record without labels — should still work (backward compat)
+	if err := tr.Record(ctx, models.UsageRecord{
+		APIKey: "k1", Model: "gpt-4", PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reports, err := tr.CostReport(ctx, now.Add(-time.Minute), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(reports))
+	}
+	if reports[0].Team != "" || reports[0].Project != "" {
+		t.Errorf("expected empty labels, got team=%q project=%q", reports[0].Team, reports[0].Project)
+	}
+}
+
 func TestMigrationIdempotent(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 

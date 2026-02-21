@@ -50,3 +50,10 @@ configs/examples/ — example configuration files
 - All exported functions need doc comments
 - Error wrapping with `fmt.Errorf("context: %w", err)`
 - Version injected via ldflags at build time
+
+## Code Quality
+
+- After finishing any implementation work, always run `make lint` and `make test` before considering the task complete
+- Fix all lint errors and test failures before moving on — never leave broken code
+- A PostToolUse hook in `.claude/settings.json` automatically runs `make lint` after every file edit/write
+- If the lint hook reports errors, fix them immediately before making further changes

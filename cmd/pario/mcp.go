@@ -51,7 +51,7 @@ func newMCPCmd() *cobra.Command {
 				enforcer = budget.New(cfg.Budget.Policies, tr)
 			}
 
-			srv := mcp.New(tr, cache, enforcer, version)
+			srv := mcp.New(tr, cache, enforcer, cfg.Attribution.Pricing, version)
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer stop()

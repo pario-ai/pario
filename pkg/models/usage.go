@@ -18,6 +18,9 @@ type UsageRecord struct {
 	PromptTokens     int       `json:"prompt_tokens"`
 	CompletionTokens int       `json:"completion_tokens"`
 	TotalTokens      int       `json:"total_tokens"`
+	Team             string    `json:"team,omitempty"`
+	Project          string    `json:"project,omitempty"`
+	Env              string    `json:"env,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 

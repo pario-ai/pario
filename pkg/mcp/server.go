@@ -23,15 +23,17 @@ type Server struct {
 	tracker  tracker.Tracker
 	cache    CacheStatter
 	enforcer *budget.Enforcer
+	pricing  []models.ModelPricing
 	version  string
 }
 
 // New creates a new MCP Server.
-func New(t tracker.Tracker, cache CacheStatter, enforcer *budget.Enforcer, version string) *Server {
+func New(t tracker.Tracker, cache CacheStatter, enforcer *budget.Enforcer, pricing []models.ModelPricing, version string) *Server {
 	return &Server{
 		tracker:  t,
 		cache:    cache,
 		enforcer: enforcer,
+		pricing:  pricing,
 		version:  version,
 	}
 }
