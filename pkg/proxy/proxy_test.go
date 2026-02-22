@@ -41,7 +41,7 @@ func setupProxy(t *testing.T, upstream *httptest.Server) *Server {
 		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
 	}
 
-	return New(cfg, tr, c, nil)
+	return New(cfg, tr, c, nil, nil)
 }
 
 func newUpstream() *httptest.Server {
@@ -151,7 +151,7 @@ func TestBudgetExceeded(t *testing.T) {
 		Session:   config.SessionConfig{GapTimeout: 30 * time.Minute},
 	}
 
-	srv := New(cfg, tr, nil, enforcer)
+	srv := New(cfg, tr, nil, enforcer, nil)
 
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -227,7 +227,7 @@ func setupAnthropicProxy(t *testing.T, upstream *httptest.Server) *Server {
 		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
 	}
 
-	return New(cfg, tr, c, nil)
+	return New(cfg, tr, c, nil, nil)
 }
 
 func TestAnthropicMessages(t *testing.T) {
@@ -420,7 +420,7 @@ func TestFallbackOn5xx(t *testing.T) {
 		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
 	}
 
-	srv := New(cfg, tr, nil, nil)
+	srv := New(cfg, tr, nil, nil, nil)
 
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -475,7 +475,7 @@ func TestNoFallbackOn4xx(t *testing.T) {
 		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
 	}
 
-	srv := New(cfg, tr, nil, nil)
+	srv := New(cfg, tr, nil, nil, nil)
 
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -522,7 +522,7 @@ func TestAllProvidersFail502(t *testing.T) {
 		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
 	}
 
-	srv := New(cfg, tr, nil, nil)
+	srv := New(cfg, tr, nil, nil, nil)
 
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -576,7 +576,7 @@ func TestModelRewriteInBody(t *testing.T) {
 		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
 	}
 
-	srv := New(cfg, tr, nil, nil)
+	srv := New(cfg, tr, nil, nil, nil)
 
 	body := `{"model":"fast","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
@@ -634,7 +634,7 @@ func TestTransportErrorFallback(t *testing.T) {
 		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
 	}
 
-	srv := New(cfg, tr, nil, nil)
+	srv := New(cfg, tr, nil, nil, nil)
 
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))

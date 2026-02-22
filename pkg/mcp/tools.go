@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/pario-ai/pario/pkg/models"
 )
 
 // Tool argument structs.
@@ -27,6 +29,7 @@ var toolHandlers = map[string]toolHandler{
 	"pario_budget":         handleBudget,
 	"pario_cache_stats":    handleCacheStats,
 	"pario_cost_report":    handleCostReport,
+	"pario_audit_search":   handleAuditSearch,
 }
 
 // allTools is the list of tool definitions exposed via tools/list.
@@ -111,6 +114,31 @@ var allTools = []ToolDefinition{
 		InputSchema: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{},
+		},
+	},
+	{
+		Name:        "pario_audit_search",
+		Description: "Search the prompt/response audit log with optional filters.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"model": map[string]any{
+					"type":        "string",
+					"description": "Filter by model (optional)",
+				},
+				"since": map[string]any{
+					"type":        "string",
+					"description": "Start date in YYYY-MM-DD format (optional)",
+				},
+				"key_prefix": map[string]any{
+					"type":        "string",
+					"description": "Filter by API key prefix (optional)",
+				},
+				"session_id": map[string]any{
+					"type":        "string",
+					"description": "Filter by session ID (optional)",
+				},
+			},
 		},
 	},
 }
@@ -225,6 +253,43 @@ func handleCostReport(ctx context.Context, s *Server, rawArgs json.RawMessage) T
 func beginningOfMonth() time.Time {
 	now := time.Now().UTC()
 	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+type auditSearchArgs struct {
+	Model     string `json:"model"`
+	Since     string `json:"since"`
+	KeyPrefix string `json:"key_prefix"`
+	SessionID string `json:"session_id"`
+}
+
+func handleAuditSearch(ctx context.Context, s *Server, rawArgs json.RawMessage) ToolCallResult {
+	if s.auditor == nil {
+		return textResult("Audit logging is not configured.")
+	}
+	var args auditSearchArgs
+	if len(rawArgs) > 0 {
+		_ = json.Unmarshal(rawArgs, &args)
+	}
+
+	opts := models.AuditQueryOpts{
+		Model:        args.Model,
+		APIKeyPrefix: args.KeyPrefix,
+		SessionID:    args.SessionID,
+		Limit:        50,
+	}
+	if args.Since != "" {
+		t, err := time.Parse("2006-01-02", args.Since)
+		if err != nil {
+			return errorResult("Invalid since date (use YYYY-MM-DD): " + err.Error())
+		}
+		opts.Since = t
+	}
+
+	entries, err := s.auditor.Query(ctx, opts)
+	if err != nil {
+		return errorResult("Error searching audit log: " + err.Error())
+	}
+	return textResult(formatAuditEntries(entries))
 }
 
 func handleCacheStats(_ context.Context, s *Server, _ json.RawMessage) ToolCallResult {

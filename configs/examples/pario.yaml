@@ -50,3 +50,17 @@ attribution:
       team: frontend
       project: web
       env: production
+
+# Audit log — opt-in full request/response logging for compliance
+audit:
+  enabled: false
+  db_path: "pario_audit.db"
+  retention_days: 90
+  redact_keys: true
+  max_body_size: 1048576  # 1 MB
+  include:
+    - prompts
+    - responses
+    - metadata
+  # exclude_models:
+  #   - gpt-3.5-turbo

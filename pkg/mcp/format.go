@@ -124,6 +124,24 @@ func formatCostReport(reports []models.CostReport) string {
 	return b.String()
 }
 
+// formatAuditEntries formats audit entries as a text table.
+func formatAuditEntries(entries []models.AuditEntry) string {
+	if len(entries) == 0 {
+		return "No audit entries found."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-38s %-20s %-10s %6s %8s %12s %-20s\n",
+		"REQUEST ID", "MODEL", "PROVIDER", "STATUS", "LATENCY", "TOKENS", "TIME")
+	b.WriteString(strings.Repeat("-", 118) + "\n")
+	for _, e := range entries {
+		fmt.Fprintf(&b, "%-38s %-20s %-10s %6d %6dms %12d %-20s\n",
+			e.RequestID, e.Model, e.Provider, e.StatusCode,
+			e.LatencyMs, e.TotalTokens,
+			e.CreatedAt.Format("2006-01-02 15:04:05"))
+	}
+	return b.String()
+}
+
 // formatCacheStats formats cache stats as text.
 func formatCacheStats(stats models.CacheStats) string {
 	total := stats.Hits + stats.Misses

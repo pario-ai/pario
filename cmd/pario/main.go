@@ -24,6 +24,7 @@ func main() {
 		newCacheCmd(),
 		newBudgetCmd(),
 		newCostCmd(),
+		newAuditCmd(),
 	)
 
 	if err := root.Execute(); err != nil {

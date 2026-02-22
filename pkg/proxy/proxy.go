@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pario-ai/pario/pkg/audit"
 	"github.com/pario-ai/pario/pkg/budget"
 	cachepkg "github.com/pario-ai/pario/pkg/cache/sqlite"
 	"github.com/pario-ai/pario/pkg/config"
@@ -28,17 +29,19 @@ type Server struct {
 	tracker  tracker.Tracker
 	cache    *cachepkg.Cache
 	enforcer *budget.Enforcer
+	auditor  *audit.Logger
 	router   *router.Router
 	mux      *http.ServeMux
 }
 
 // New creates a proxy Server wired with all dependencies.
-func New(cfg *config.Config, t tracker.Tracker, c *cachepkg.Cache, e *budget.Enforcer) *Server {
+func New(cfg *config.Config, t tracker.Tracker, c *cachepkg.Cache, e *budget.Enforcer, a *audit.Logger) *Server {
 	s := &Server{
 		cfg:      cfg,
 		tracker:  t,
 		cache:    c,
 		enforcer: e,
+		auditor:  a,
 		router:   router.New(cfg),
 		mux:      http.NewServeMux(),
 	}
@@ -198,6 +201,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	reqStart := time.Now()
+
 	// Fallback loop
 	var result *upstreamResult
 	for _, route := range routes {
@@ -241,9 +246,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse response for usage tracking
+	var usage *models.Usage
 	if result.statusCode == http.StatusOK && !req.Stream {
 		var chatResp models.ChatCompletionResponse
 		if err := json.Unmarshal(result.body, &chatResp); err == nil && chatResp.Usage != nil {
+			usage = chatResp.Usage
 			team, project, env := s.resolveLabels(r, clientKey)
 			_ = s.tracker.Record(r.Context(), models.UsageRecord{
 				APIKey:           clientKey,
@@ -263,6 +270,35 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				_ = s.cache.Put(hash, req.Model, result.body)
 			}
 		}
+	}
+
+	// Audit log
+	if s.auditor != nil {
+		latency := time.Since(reqStart).Milliseconds()
+		keyHash, keyPrefix := audit.HashAPIKey(clientKey)
+		entry := models.AuditEntry{
+			RequestID:    r.Header.Get("X-Request-ID"),
+			APIKeyHash:   keyHash,
+			APIKeyPrefix: keyPrefix,
+			Model:        req.Model,
+			SessionID:    sessionID,
+			Provider:     "openai",
+			RequestBody:  string(body),
+			ResponseBody: string(result.body),
+			StatusCode:   result.statusCode,
+			LatencyMs:    latency,
+			CreatedAt:    time.Now().UTC(),
+		}
+		if usage != nil {
+			entry.PromptTokens = usage.PromptTokens
+			entry.CompletionTokens = usage.CompletionTokens
+			entry.TotalTokens = usage.TotalTokens
+		}
+		go func() {
+			if err := s.auditor.Log(context.Background(), entry); err != nil {
+				log.Printf("audit log error: %v", err)
+			}
+		}()
 	}
 
 	// Forward response headers and body
@@ -331,6 +367,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	reqStart := time.Now()
+
 	// Fallback loop
 	anthropicVersion := r.Header.Get("anthropic-version")
 	var result *upstreamResult
@@ -378,10 +416,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse response for usage tracking
+	var usage *models.Usage
 	if result.statusCode == http.StatusOK && !req.Stream {
 		var anthResp models.AnthropicResponse
 		if err := json.Unmarshal(result.body, &anthResp); err == nil && anthResp.Usage != nil {
-			usage := anthResp.Usage.ToUsage()
+			usage = anthResp.Usage.ToUsage()
 			team, project, env := s.resolveLabels(r, clientKey)
 			_ = s.tracker.Record(r.Context(), models.UsageRecord{
 				APIKey:           clientKey,
@@ -401,6 +440,35 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				_ = s.cache.Put(hash, req.Model, result.body)
 			}
 		}
+	}
+
+	// Audit log
+	if s.auditor != nil {
+		latency := time.Since(reqStart).Milliseconds()
+		keyHash, keyPrefix := audit.HashAPIKey(clientKey)
+		entry := models.AuditEntry{
+			RequestID:    r.Header.Get("X-Request-ID"),
+			APIKeyHash:   keyHash,
+			APIKeyPrefix: keyPrefix,
+			Model:        req.Model,
+			SessionID:    sessionID,
+			Provider:     "anthropic",
+			RequestBody:  string(body),
+			ResponseBody: string(result.body),
+			StatusCode:   result.statusCode,
+			LatencyMs:    latency,
+			CreatedAt:    time.Now().UTC(),
+		}
+		if usage != nil {
+			entry.PromptTokens = usage.PromptTokens
+			entry.CompletionTokens = usage.CompletionTokens
+			entry.TotalTokens = usage.TotalTokens
+		}
+		go func() {
+			if err := s.auditor.Log(context.Background(), entry); err != nil {
+				log.Printf("audit log error: %v", err)
+			}
+		}()
 	}
 
 	// Forward response headers and body

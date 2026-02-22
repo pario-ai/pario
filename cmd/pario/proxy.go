@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/pario-ai/pario/pkg/audit"
 	"github.com/pario-ai/pario/pkg/budget"
 	cachepkg "github.com/pario-ai/pario/pkg/cache/sqlite"
 	"github.com/pario-ai/pario/pkg/config"
@@ -47,7 +48,17 @@ func newProxyCmd() *cobra.Command {
 				enforcer = budget.New(cfg.Budget.Policies, tr)
 			}
 
-			srv := proxy.New(cfg, tr, cache, enforcer)
+			var auditor *audit.Logger
+			if cfg.Audit.Enabled {
+				auditor, err = audit.New(cfg.Audit)
+				if err != nil {
+					return fmt.Errorf("init audit logger: %w", err)
+				}
+				defer func() { _ = auditor.Close() }()
+				log.Printf("audit logging enabled: %s", cfg.Audit.DBPath)
+			}
+
+			srv := proxy.New(cfg, tr, cache, enforcer, auditor)
 
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()

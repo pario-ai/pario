@@ -19,6 +19,7 @@ type Config struct {
 	Session   SessionConfig    `yaml:"session"`
 	Router      RouterConfig      `yaml:"router"`
 	Attribution AttributionConfig `yaml:"attribution"`
+	Audit       models.AuditConfig `yaml:"audit"`
 }
 
 // AttributionConfig controls cost attribution and pricing.
@@ -86,6 +87,14 @@ func Default() *Config {
 		},
 		Session: SessionConfig{
 			GapTimeout: 30 * time.Minute,
+		},
+		Audit: models.AuditConfig{
+			Enabled:       false,
+			DBPath:        "pario_audit.db",
+			RetentionDays: 90,
+			RedactKeys:    true,
+			MaxBodySize:   1 << 20, // 1 MB
+			Include:       []string{"prompts", "responses", "metadata"},
 		},
 	}
 }

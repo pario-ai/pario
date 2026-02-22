@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 
+	"github.com/pario-ai/pario/pkg/audit"
 	"github.com/pario-ai/pario/pkg/budget"
 	"github.com/pario-ai/pario/pkg/models"
 	"github.com/pario-ai/pario/pkg/tracker"
@@ -23,16 +24,18 @@ type Server struct {
 	tracker  tracker.Tracker
 	cache    CacheStatter
 	enforcer *budget.Enforcer
+	auditor  *audit.Logger
 	pricing  []models.ModelPricing
 	version  string
 }
 
 // New creates a new MCP Server.
-func New(t tracker.Tracker, cache CacheStatter, enforcer *budget.Enforcer, pricing []models.ModelPricing, version string) *Server {
+func New(t tracker.Tracker, cache CacheStatter, enforcer *budget.Enforcer, auditor *audit.Logger, pricing []models.ModelPricing, version string) *Server {
 	return &Server{
 		tracker:  t,
 		cache:    cache,
 		enforcer: enforcer,
+		auditor:  auditor,
 		pricing:  pricing,
 		version:  version,
 	}

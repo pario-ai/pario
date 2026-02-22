@@ -5,8 +5,9 @@ import (
 	"os"
 	"os/signal"
 
-	cachepkg "github.com/pario-ai/pario/pkg/cache/sqlite"
+	"github.com/pario-ai/pario/pkg/audit"
 	"github.com/pario-ai/pario/pkg/budget"
+	cachepkg "github.com/pario-ai/pario/pkg/cache/sqlite"
 	"github.com/pario-ai/pario/pkg/config"
 	"github.com/pario-ai/pario/pkg/mcp"
 	"github.com/pario-ai/pario/pkg/tracker"
@@ -51,7 +52,16 @@ func newMCPCmd() *cobra.Command {
 				enforcer = budget.New(cfg.Budget.Policies, tr)
 			}
 
-			srv := mcp.New(tr, cache, enforcer, cfg.Attribution.Pricing, version)
+			var auditor *audit.Logger
+			if cfg.Audit.Enabled {
+				auditor, err = audit.New(cfg.Audit)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = auditor.Close() }()
+			}
+
+			srv := mcp.New(tr, cache, enforcer, auditor, cfg.Attribution.Pricing, version)
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer stop()
