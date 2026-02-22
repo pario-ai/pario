@@ -1,5 +1,7 @@
 package models
 
+import "encoding/json"
+
 // ChatMessage represents a single message in a chat conversation.
 type ChatMessage struct {
 	Role    string `json:"role"`
@@ -62,6 +64,29 @@ type AnthropicResponse struct {
 	Content      []AnthropicContent `json:"content"`
 	StopReason   string             `json:"stop_reason"`
 	Usage        *AnthropicUsage    `json:"usage,omitempty"`
+}
+
+// ChatCompletionChunk is an OpenAI streaming chunk.
+type ChatCompletionChunk struct {
+	ID      string        `json:"id"`
+	Model   string        `json:"model"`
+	Choices []ChunkChoice `json:"choices"`
+	Usage   *Usage        `json:"usage,omitempty"`
+}
+
+// ChunkChoice is a choice within a streaming chunk.
+type ChunkChoice struct {
+	Index        int          `json:"index"`
+	Delta        ChatMessage  `json:"delta"`
+	FinishReason *string      `json:"finish_reason"`
+}
+
+// AnthropicStreamEvent represents an Anthropic SSE event.
+type AnthropicStreamEvent struct {
+	Type    string           `json:"type"`
+	Message json.RawMessage  `json:"message,omitempty"`
+	Delta   json.RawMessage  `json:"delta,omitempty"`
+	Usage   *AnthropicUsage  `json:"usage,omitempty"`
 }
 
 // ToUsage converts AnthropicUsage to the standard Usage type.

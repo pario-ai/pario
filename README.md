@@ -6,7 +6,7 @@ Pario sits between your applications and LLM providers (OpenAI, Anthropic, etc.)
 
 ## Features
 
-- **[Transparent Proxy](docs/proxy.md)** — drop-in replacement for OpenAI and Anthropic API endpoints
+- **[Transparent Proxy](docs/proxy.md)** — drop-in replacement for OpenAI and Anthropic API endpoints with SSE streaming support
 - **[Token Tracking](docs/tracking.md)** — per-key, per-model usage tracking with session detection
 - **[Token Budgets](docs/budget.md)** — per-team, per-app, per-model spend limits
 - **[Semantic Caching](docs/cache.md)** — deduplicate similar prompts (SQLite local, Redis distributed)

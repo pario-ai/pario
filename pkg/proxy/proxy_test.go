@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -644,5 +645,270 @@ func TestTransportErrorFallback(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// flusherRecorder wraps httptest.ResponseRecorder with Flush support.
+type flusherRecorder struct {
+	*httptest.ResponseRecorder
+	flushed int
+}
+
+func (f *flusherRecorder) Flush() {
+	f.flushed++
+}
+
+func newStreamingOpenAIUpstream() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "no flusher", 500)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+
+		chunks := []string{
+			`data: {"id":"chatcmpl-1","model":"gpt-4","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl-1","model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl-1","model":"gpt-4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			fmt.Fprintf(w, "%s\n\n", chunk)
+			flusher.Flush()
+		}
+	}))
+}
+
+func newStreamingAnthropicUpstream() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "no flusher", 500)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+
+		events := []string{
+			`event: message_start` + "\n" + `data: {"type":"message_start","message":{"model":"claude-sonnet-4-20250514","usage":{"input_tokens":12,"output_tokens":0}}}`,
+			`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}`,
+			`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}`,
+			`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
+		}
+		for _, evt := range events {
+			fmt.Fprintf(w, "%s\n\n", evt)
+			flusher.Flush()
+		}
+	}))
+}
+
+func TestStreamingChatCompletions(t *testing.T) {
+	upstream := newStreamingOpenAIUpstream()
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	tr, err := tracker.New(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+
+	cfg := &config.Config{
+		Listen:    ":0",
+		Providers: []config.ProviderConfig{{Name: "test", URL: upstream.URL, APIKey: "sk-provider"}},
+		Session:   config.SessionConfig{GapTimeout: 30 * time.Minute},
+	}
+	srv := New(cfg, tr, nil, nil, nil)
+
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := &flusherRecorder{ResponseRecorder: httptest.NewRecorder()}
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.flushed == 0 {
+		t.Error("expected flush calls for SSE streaming")
+	}
+	if !strings.Contains(w.Body.String(), "data: [DONE]") {
+		t.Error("expected SSE data to contain [DONE]")
+	}
+	if w.Header().Get("X-Pario-Session") == "" {
+		t.Error("expected X-Pario-Session header")
+	}
+
+	// Verify usage was tracked
+	summaries, err := tr.Summary(context.Background(), "client-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range summaries {
+		if s.Model == "gpt-4" {
+			found = true
+			if s.TotalTokens != 15 {
+				t.Errorf("expected 15 total tokens tracked, got %d", s.TotalTokens)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected usage record for gpt-4")
+	}
+}
+
+func TestStreamingMessages(t *testing.T) {
+	upstream := newStreamingAnthropicUpstream()
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	tr, err := tracker.New(filepath.Join(dir, "tracker.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+
+	cfg := &config.Config{
+		Listen:    ":0",
+		Providers: []config.ProviderConfig{{Name: "anthropic", URL: upstream.URL, APIKey: "sk-ant", Type: "anthropic"}},
+		Session:   config.SessionConfig{GapTimeout: 30 * time.Minute},
+	}
+	srv := New(cfg, tr, nil, nil, nil)
+
+	body := `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hi"}],"max_tokens":1024,"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("x-api-key", "client-key")
+	req.Header.Set("Content-Type", "application/json")
+
+	w := &flusherRecorder{ResponseRecorder: httptest.NewRecorder()}
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.flushed == 0 {
+		t.Error("expected flush calls for SSE streaming")
+	}
+	if !strings.Contains(w.Body.String(), "message_start") {
+		t.Error("expected SSE data to contain message_start")
+	}
+
+	// Verify usage was tracked
+	summaries, err := tr.Summary(context.Background(), "client-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range summaries {
+		if s.Model == "claude-sonnet-4-20250514" {
+			found = true
+			if s.TotalTokens != 20 {
+				t.Errorf("expected 20 total tokens tracked, got %d", s.TotalTokens)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected usage record for claude-sonnet-4-20250514")
+	}
+}
+
+func TestStreamingFallback(t *testing.T) {
+	// First upstream returns 500
+	upstream1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"fail"}`))
+	}))
+	defer upstream1.Close()
+
+	// Second upstream streams OK
+	upstream2 := newStreamingOpenAIUpstream()
+	defer upstream2.Close()
+
+	dir := t.TempDir()
+	tr, _ := tracker.New(filepath.Join(dir, "tracker.db"))
+	defer func() { _ = tr.Close() }()
+
+	cfg := &config.Config{
+		Listen: ":0",
+		Providers: []config.ProviderConfig{
+			{Name: "primary", URL: upstream1.URL, APIKey: "sk-1"},
+			{Name: "fallback", URL: upstream2.URL, APIKey: "sk-2"},
+		},
+		Router: config.RouterConfig{
+			Routes: []config.RouteConfig{
+				{
+					Model: "gpt-4",
+					Targets: []config.RouteTarget{
+						{Provider: "primary", Model: "gpt-4"},
+						{Provider: "fallback", Model: "gpt-4"},
+					},
+				},
+			},
+		},
+		Session: config.SessionConfig{GapTimeout: 30 * time.Minute},
+	}
+	srv := New(cfg, tr, nil, nil, nil)
+
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+
+	w := &flusherRecorder{ResponseRecorder: httptest.NewRecorder()}
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from fallback, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "data: [DONE]") {
+		t.Error("expected SSE stream from fallback")
+	}
+}
+
+func TestStreamingSkipsCache(t *testing.T) {
+	upstream := newStreamingOpenAIUpstream()
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	tr, _ := tracker.New(filepath.Join(dir, "tracker.db"))
+	defer func() { _ = tr.Close() }()
+
+	c, _ := cachepkg.New(filepath.Join(dir, "cache.db"), time.Hour)
+	defer func() { _ = c.Close() }()
+
+	cfg := &config.Config{
+		Listen:    ":0",
+		Providers: []config.ProviderConfig{{Name: "test", URL: upstream.URL, APIKey: "sk-provider"}},
+		Session:   config.SessionConfig{GapTimeout: 30 * time.Minute},
+	}
+	srv := New(cfg, tr, c, nil, nil)
+
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stream":true}`
+
+	// First streaming request
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := &flusherRecorder{ResponseRecorder: httptest.NewRecorder()}
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	// Second streaming request should NOT be cached
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req2.Header.Set("Authorization", "Bearer client-key")
+	w2 := &flusherRecorder{ResponseRecorder: httptest.NewRecorder()}
+	srv.ServeHTTP(w2, req2)
+
+	if w2.Header().Get("X-Pario-Cache") == "hit" {
+		t.Error("streaming requests should not be served from cache")
+	}
+	if w2.flushed == 0 {
+		t.Error("second request should still stream, not be cached")
 	}
 }

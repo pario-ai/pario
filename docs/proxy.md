@@ -32,8 +32,28 @@ Client request
   ├─ Session resolution (auto-detect or explicit via X-Pario-Session)
   ├─ Usage tracking (record prompt/completion/total tokens)
   ├─ Cache store (on 200 OK, non-streaming)
-  └─ Forward response to client
+  └─ Forward response to client (buffered or SSE streaming)
 ```
+
+### SSE Streaming
+
+When `"stream": true` is set in the request body, Pario switches to a true SSE pass-through mode instead of buffering the entire response. Chunks are flushed to the client as they arrive from the upstream provider.
+
+**How it works:**
+
+- The proxy opens a raw connection to the upstream and relays each SSE event line-by-line, flushing at event boundaries (blank lines).
+- Usage data is extracted on-the-fly from the stream:
+  - **OpenAI**: The `usage` field in the final chunk (before `data: [DONE]`) provides prompt, completion, and total token counts.
+  - **Anthropic**: `message_start` provides the model and input tokens; `message_delta` provides output tokens.
+- After the stream completes, usage is recorded to the tracker and audit log as with non-streaming requests.
+- The accumulated SSE text is included in the audit log entry (truncated to 8KB).
+
+**What stays the same:**
+
+- **Cache**: Streaming requests skip the cache (both lookup and store) — the existing `!req.Stream` guard handles this.
+- **Budget**: The pre-request budget check runs before streaming begins.
+- **Fallback**: The fallback loop retries on connection errors or 5xx responses before any data is sent to the client. Once streaming starts, the connection is committed to that upstream.
+- **Session**: Session resolution works identically — the `X-Pario-Session` header is set before the first SSE chunk is sent.
 
 ### Authentication
 
